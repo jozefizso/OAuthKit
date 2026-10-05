@@ -11,8 +11,8 @@ actor OAuthHeldResponseGate {
         await withCheckedContinuation { requestWaiters.append($0) }
     }
 
-    func release(withAccessToken accessToken: String) {
-        let body = "{\"access_token\":\"\(accessToken)\",\"refresh_token\":\"refresh-token\",\"expires_in\":3600,\"token_type\":\"Bearer\"}"
+    func release(withAccessToken accessToken: String, refreshToken: String = "refresh-token") {
+        let body = "{\"access_token\":\"\(accessToken)\",\"refresh_token\":\"\(refreshToken)\",\"expires_in\":3600,\"token_type\":\"Bearer\"}"
         let data = Data(body.utf8)
         releasedResponse = data
         let waiters = responseWaiters
@@ -59,7 +59,7 @@ actor OAuthHeldResponseRegistry {
     }
 }
 
-final class OAuthHeldResponseURLProtocol: URLProtocol, @unchecked Sendable {
+final class OAuthHeldResponseURLProtocol: URLProtocol {
     override class func canInit(with request: URLRequest) -> Bool {
         request.url?.host?.hasSuffix(".oauthkit.test") == true
     }
@@ -67,14 +67,17 @@ final class OAuthHeldResponseURLProtocol: URLProtocol, @unchecked Sendable {
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
 
     override func startLoading() {
-        Task { [weak self] in
-            guard let self,
-                  let gate = await OAuthHeldResponseRegistry.gate(for: request.url?.host) else { return }
+        let host = request.url?.host
+        let url = request.url
+        nonisolated(unsafe) let target: URLProtocol = self
+        Task {
+            guard let gate = await OAuthHeldResponseRegistry.gate(for: host) else { return }
             let data = await gate.responseForRequest()
-            guard let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "application/json"]) else { return }
-            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-            client?.urlProtocol(self, didLoad: data)
-            client?.urlProtocolDidFinishLoading(self)
+            guard let url,
+                  let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "application/json"]) else { return }
+            target.client?.urlProtocol(target, didReceive: response, cacheStoragePolicy: .notAllowed)
+            target.client?.urlProtocol(target, didLoad: data)
+            target.client?.urlProtocolDidFinishLoading(target)
         }
     }
 

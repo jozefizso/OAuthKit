@@ -21,7 +21,7 @@ struct OAuthLifecycleRaceTests {
         await gate.waitForRequest()
 
         // Act: clear authorization while the refresh response remains held, then release that response.
-        oauth.clear()
+        try oauth.clear()
         await gate.release(withAccessToken: "stale-cleared-token")
         await refresh.value
 
@@ -115,6 +115,7 @@ struct OAuthLifecycleRaceTests {
 
         let provider = Self.provider(host: host)
         let (oauth, _) = try Self.oauth(provider: provider)
+        oauth.state = .empty
 
         // Arrange: start two public refresh authorizations while the first response is held.
         oauth.authorize(provider: provider, grantType: .refreshToken)
@@ -143,7 +144,9 @@ struct OAuthLifecycleRaceTests {
               accessTokenURL: URL(string: "https://\(host)/token")!,
               deviceCodeURL: URL(string: "https://\(host)/device")!,
               clientID: "test-client",
-              clientSecret: "test-secret")
+              clientSecret: "test-secret",
+              clientType: .confidential,
+              redirectURI: "com.example.oauthkit:/oauth/callback")
     }
 
     private static func oauth(provider: OAuth.Provider) throws -> (OAuth, OAuth.Authorization) {
