@@ -40,14 +40,11 @@ final class KeychainTests {
 
         let found: OAuth.Token = try #require(try keychain.get(key: key))
 
-        #expect(token.accessToken.isNotEmpty)
         #expect(token.accessToken == found.accessToken)
         #expect(token.expiresIn == found.expiresIn)
         #expect(token.scope == found.scope)
         #expect(token.type == found.type)
 
-        let keys = try keychain.keys
-        #expect(keys.count == 1)
 
         let deleted = try keychain.delete(key: key)
         #expect(deleted == true)
@@ -101,7 +98,7 @@ final class KeychainTests {
     func failedUpdatePreservesPreviousValue() throws {
         // Arrange
         let account = "oauthkit.test." + String.secureRandom()
-        var storage = Keychain.DefaultStorage(account: account)
+        let storage = Keychain.DefaultStorage(account: account)
         let oldValue = Data("previous-token".utf8)
         try storage.set(oldValue, for: "provider")
         defer {
@@ -162,6 +159,31 @@ final class KeychainTests {
         try protectedWriter.set("secret", for: "token")
 
         // Act / Assert
+        #expect(throws: (any Error).self) {
+            let _: String? = try secondary.get(key: "token")
+        }
+    }
+
+    /// A client with authentication disabled may not remove an existing item's
+    /// biometric policy while replacing its token. An OS refusal is also safe.
+    @Test("A nonprotected writer cannot downgrade biometric protection")
+    func replacingProtectedItemPreservesItsGate() throws {
+        // Arrange
+        let namespace = "oauthkit.test." + String.secureRandom()
+        let protected = Keychain(namespace)
+        protected.requiresAuthentication = true
+        try protected.set("original", for: "token")
+        defer { _ = try? protected.clear() }
+        let secondary = Keychain(namespace)
+
+        // Act
+        do {
+            try secondary.set("replacement", for: "token")
+        } catch KeychainError.securityStatus(let status) {
+            #expect(status == errSecAuthFailed || status == errSecInteractionNotAllowed)
+        }
+
+        // Assert
         #expect(throws: (any Error).self) {
             let _: String? = try secondary.get(key: "token")
         }

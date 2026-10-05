@@ -226,6 +226,10 @@ when biometric enrollment changes. Pass `.localAuthentication` to supply an
 `LAContext`. Existing unprotected items are rejected in biometric mode rather
 than silently treated as protected. Native macOS uses the Data Protection
 Keychain; the host needs the appropriate signing, entitlements, and user context.
+Each client has independent authentication settings. A client without the
+biometric option cannot silently restore protected items or downgrade their
+protection on replacement. Such reads fail without displaying an authentication
+prompt; enable the option explicitly to authenticate.
 
 Developers can also implement private browsing by setting the **.useNonPersistentWebDataStore** option to true. This forces the [WKWebView](https://developer.apple.com/documentation/webkit/wkwebview) used during authorization flows to use a non-persistent data store, preventing data from being written to the file system.
 

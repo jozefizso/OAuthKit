@@ -48,12 +48,22 @@ extension Keychain {
 
     #if canImport(Security)
     /// The default token storage used by Apple ecosystems.
-    struct DefaultStorage: Storage {
+    final class DefaultStorage: Storage {
+        // Data Protection Keychain supplies an access-control object even for
+        // unprotected records. Record the policy we actually create, rather than
+        // treating the presence of that object as evidence of biometric protection.
+        private static let biometricProtectionMarker = Data("OAuthKit.biometryCurrentSet.v1".utf8)
+
         var account: String = defaultAccount
         var statusOverride: ((KeychainSecurityOperation) -> OSStatus?)?
         var requiresAuthentication = false
         #if os(macOS) || os(iOS) || os(visionOS)
         var authenticationContext: LAContext?
+        private lazy var nonInteractiveContext: LAContext = {
+            let context = LAContext()
+            context.interactionNotAllowed = true
+            return context
+        }()
         #endif
 
         init(account: String) { self.account = account }
@@ -86,7 +96,7 @@ extension Keychain {
         @discardableResult
         func set(_ data: Data, for key: String) throws -> Bool {
             assert(key.isNotEmpty, "❌ The keychain key cannot be empty.")
-            let query = platformScopedKeychainQuery([
+            var query = platformScopedKeychainQuery([
                 kSecClass as String: kSecClassGenericPassword,
                 kSecAttrService as String: account,
                 kSecAttrAccount as String: accountKey(key)
@@ -98,16 +108,24 @@ extension Keychain {
                     throw accessError?.takeRetainedValue() ?? KeychainError.securityStatus(errSecAuthFailed)
                 }
                 attributes[kSecAttrAccessControl as String] = access
+                attributes[kSecAttrGeneric as String] = Self.biometricProtectionMarker
             }
+            #if os(macOS) || os(iOS) || os(visionOS)
+            // macOS rejects noninteractive LAContexts on updates even when no
+            // item matches. Deny implicit UI without attaching such a context.
+            if requiresAuthentication, let authenticationContext {
+                query[kSecUseAuthenticationContext as String] = authenticationContext
+            } else {
+                query[kSecUseAuthenticationUI as String] = kSecUseAuthenticationUIFail
+            }
+            #endif
             let updateStatus = statusOverride?(.update) ?? SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
             if updateStatus == errSecSuccess { return true }
             guard updateStatus == errSecItemNotFound else { throw KeychainError.securityStatus(updateStatus) }
-            var item = query
-            item[kSecValueData as String] = data
-            if let accessControl = attributes[kSecAttrAccessControl as String] {
-                item[kSecAttrAccessControl as String] = accessControl
-            }
-            let addStatus = statusOverride?(.add) ?? SecItemAdd(item as CFDictionary, nil)
+            query.removeValue(forKey: kSecUseAuthenticationContext as String)
+            query.removeValue(forKey: kSecUseAuthenticationUI as String)
+            query.merge(attributes) { _, replacement in replacement }
+            let addStatus = statusOverride?(.add) ?? SecItemAdd(query as CFDictionary, nil)
             guard addStatus == errSecSuccess else { throw KeychainError.securityStatus(addStatus) }
             return true
         }
@@ -125,10 +143,13 @@ extension Keychain {
                 query[kSecReturnAttributes as String] = true
             }
             #if os(macOS) || os(iOS) || os(visionOS)
-            if let authenticationContext {
+            if requiresAuthentication {
+                guard let authenticationContext else {
+                    throw KeychainError.securityStatus(errSecAuthFailed)
+                }
                 query[kSecUseAuthenticationContext as String] = authenticationContext
-            } else if requiresAuthentication {
-                throw KeychainError.securityStatus(errSecAuthFailed)
+            } else {
+                query[kSecUseAuthenticationContext as String] = nonInteractiveContext
             }
             #else
             if requiresAuthentication { throw KeychainError.securityStatus(errSecAuthFailed) }
@@ -142,6 +163,7 @@ extension Keychain {
             if requiresAuthentication {
                 guard let item = result as? [String: Any],
                       item[kSecAttrAccessControl as String] != nil,
+                      item[kSecAttrGeneric as String] as? Data == Self.biometricProtectionMarker,
                       let data = item[kSecValueData as String] as? Data else {
                     throw KeychainError.securityStatus(errSecAuthFailed)
                 }

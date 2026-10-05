@@ -35,9 +35,7 @@ class Keychain: @unchecked Sendable {
         set {
             lock.lock()
             defer { lock.unlock() }
-            guard var defaultStorage = storage as? DefaultStorage else { return }
-            defaultStorage.requiresAuthentication = newValue
-            storage = defaultStorage
+            (storage as? DefaultStorage)?.requiresAuthentication = newValue
         }
     }
 
@@ -52,9 +50,7 @@ class Keychain: @unchecked Sendable {
         set {
             lock.lock()
             defer { lock.unlock() }
-            guard var defaultStorage = storage as? DefaultStorage else { return }
-            defaultStorage.authenticationContext = newValue
-            storage = defaultStorage
+            (storage as? DefaultStorage)?.authenticationContext = newValue
         }
     }
     #endif
