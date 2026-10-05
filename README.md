@@ -316,6 +316,11 @@ You can find a sample application integrated with OAuthKit [here](https://github
 ## OAuth 2.0 Providers
 OAuthKit should work with any standard OAuth2 provider. Below is a list of tested providers along with their OAuth2 documentation links. If you’re interested in seeing support or examples for a provider not listed here, please open an issue on our [here](https://github.com/codefiesta/OAuthKit/issues).
 
+Token, refresh, and device grant credentials are never sent in URL queries.
+Refresh uses the configured `accessTokenURL`, not `authorizationURL`.
+The `encodeHttpBody` compatibility mode has been removed; providers must accept
+form-encoded bodies rather than require credential-bearing URLs.
+
 * [Auth0 / Okta](https://developer.okta.com/signup/)
 * [Box](https://developer.box.com/guides/authentication/oauth2/)
 * [Dropbox](https://developers.dropbox.com/oauth-guide)
@@ -323,7 +328,6 @@ OAuthKit should work with any standard OAuth2 provider. Below is a list of teste
 * [Google](https://developers.google.com/identity/protocols/oauth2)
 	* **Important**: When creating a Google OAuth2 application from the [Google API Console](https://console.developers.google.com/) create an OAuth 2.0 Client type of Web Application (not iOS).
 * [LinkedIn](https://developer.linkedin.com/)
-	* **Important**: When creating a LinkedIn OAuth2 provider, you will need to explicitly set the `encodeHttpBody` property to false otherwise the /token request will fail. Unfortunately, OAuth providers vary in the way they decode the parameters of that request (either encoded into the httpBody or as query parameters). See sample [oauth.json](https://github.com/codefiesta/OAuthKit/blob/main/Tests/OAuthKitTests/Resources/oauth.json).
 	* LinkedIn currently doesn't support **PKCE**.
 * [Instagram](https://developers.facebook.com/docs/instagram-basic-display-api/guides/getting-access-tokens-and-permissions)
 * [Microsoft](https://learn.microsoft.com/en-us/entra/identity-platform/v2-oauth2-auth-code-flow)
