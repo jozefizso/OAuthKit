@@ -111,13 +111,8 @@ extension OAuth {
 
         // MARK: Query Items
 
-        /// Builds default url query items for the specified provider and grant type.
-        ///
-        /// Important notes about the `grantType`:
-        /// * When `.authorizationCode`,`.pkce`, or `.refreshToken` the items are built for  `/authorization` requests.
-        /// * When `.deviceCode` the items are built for  `/device` requests.
-        /// * When `.clientCredentials` the items are built for  `/token` requests.
-        /// * When `.refreshToken` the items are nil
+        /// Builds default URL query items for the specified provider and grant type.
+        /// Authorization requests always use PKCE with S256.
         /// - Parameters:
         ///   - provider: the oauth provider
         ///   - grantType: the grant type
@@ -125,11 +120,6 @@ extension OAuth {
         private static func buildQueryItems(provider: Provider, grantType: GrantType) -> [URLQueryItem]? {
             var queryItems = [URLQueryItem]()
             switch grantType {
-            case .authorizationCode(let state):
-                queryItems.append(URLQueryItem(key: .clientID, value: provider.clientID))
-                queryItems.append(URLQueryItem(key: .redirectUri, value: provider.redirectURI))
-                queryItems.append(URLQueryItem(key: .responseType, value: responseTypeCode))
-                queryItems.append(URLQueryItem(key: .state, value: state))
             case .pkce(let pkce):
                 queryItems.append(URLQueryItem(key: .clientID, value: provider.clientID))
                 queryItems.append(URLQueryItem(key: .redirectUri, value: provider.redirectURI))
@@ -175,7 +165,7 @@ extension OAuth {
         ///   - pkce: the pkce data
         /// - Returns: the `/token` url query items
         private static func buildQueryItems(provider: Provider, code: String, pkce: PKCE? = nil) -> [URLQueryItem] {
-            let grantType: GrantType = .authorizationCode(.empty)
+            let grantType: GrantType = .pkce(.init())
             var queryItems: [URLQueryItem] = [
                 URLQueryItem(key: .clientID, value: provider.clientID),
                 URLQueryItem(key: .clientSecret, value: provider.clientSecret),

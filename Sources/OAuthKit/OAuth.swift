@@ -149,9 +149,9 @@ public extension OAuth {
     ///   - grantType: the grant type to execute
     func authorize(provider: Provider, grantType: GrantType = .pkce(.init())) {
         switch grantType {
-        case .authorizationCode, .pkce:
+        case .pkce:
             supersedeTasks()
-            state = .authorizing(provider, grantType)
+            state = .authorizing(provider, .pkce(.init()))
         case .deviceCode:
             supersedeTasks()
             state = .requestingDeviceCode(provider)
@@ -171,6 +171,27 @@ public extension OAuth {
                 await refreshToken(provider: provider)
             }
         }
+    }
+    /// Validates and consumes the active authorization callback before exchanging its code.
+    @discardableResult
+    func handleAuthorizationCallback(_ url: URL) -> Bool {
+        guard case .authorizing(let provider, let grantType) = state,
+              case .pkce(let pkce) = grantType,
+              let redirectURI = provider.redirectURI,
+              let redirect = URLComponents(string: redirectURI),
+              let callback = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              callback.scheme == redirect.scheme,
+              callback.host == redirect.host,
+              callback.port == redirect.port,
+              callback.path == redirect.path,
+              let items = callback.queryItems,
+              items.filter({ $0.name == "state" }).count == 1,
+              items.filter({ $0.name == "code" }).count == 1,
+              items.first(where: { $0.name == "state" })?.value == pkce.state,
+              let code = items.first(where: { $0.name == "code" })?.value else { return false }
+        state = .empty
+        token(provider: provider, code: code, pkce: pkce)
+        return true
     }
 
     /// Requests to exchange a code for an access token.

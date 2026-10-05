@@ -102,14 +102,15 @@ final class OAuthTests {
     /// Tests the authorization request parameters.
     @Test("Building Authorization Request")
     func whenBuildingAuthorizationRequest() async throws {
-        let state: String = .secureRandom(count: 16)
-        let grantType: OAuth.GrantType = .authorizationCode(state)
+        let pkce = OAuth.PKCE()
+        let grantType: OAuth.GrantType = .pkce(pkce)
         let request = OAuth.Request.auth(provider: provider, grantType: grantType)
         #expect(request != nil)
         #expect(request!.url!.absoluteString.contains("client_id=\(provider.clientID)"))
         #expect(request!.url!.absoluteString.contains("redirect_uri=\(provider.redirectURI!)"))
         #expect(request!.url!.absoluteString.contains("response_type=code"))
-        #expect(request!.url!.absoluteString.contains("state=\(state)"))
+        #expect(request!.url!.absoluteString.contains("state=\(pkce.state)"))
+        #expect(request!.url!.absoluteString.contains("code_challenge_method=S256"))
     }
 
     /// Tests the building of client credential token requests.
@@ -658,8 +659,8 @@ final class OAuthTests {
     /// Tests to make sure the grant type raw values are frozen and haven't been changed during development.
     @Test("Grant Type Raw Value Checking")
     func whenCheckingGrantType() async throws {
-        var grantType: OAuth.GrantType = .authorizationCode(.empty)
-        #expect(grantType.rawValue == "authorization_code")
+        var grantType: OAuth.GrantType = .pkce(.init())
+        #expect(grantType.rawValue == "pkce")
         grantType = .clientCredentials
         #expect(grantType.rawValue == "client_credentials")
         grantType = .deviceCode
@@ -691,18 +692,21 @@ final class OAuthTests {
     /// Tests OAuth State changes
     @Test("OAuth State Changes")
     func whenOAuthState() async throws {
-        let state: String = .secureRandom(count: 16)
-
-        // Authorization Code
-        var grantType: OAuth.GrantType = .authorizationCode(state)
-        oauth.authorize(provider: provider, grantType: grantType)
-        #expect(oauth.state == .authorizing(provider, grantType))
-
-        // PKCE
-        let pkce: OAuth.PKCE = .init()
-        grantType = .pkce(pkce)
-        oauth.authorize(provider: provider, grantType: grantType)
-        #expect(oauth.state == .authorizing(provider, grantType))
+        oauth.authorize(provider: provider)
+        guard case .authorizing(let activeProvider, let activeGrant) = oauth.state,
+              case .pkce(let firstPKCE) = activeGrant else {
+            Issue.record("Expected an S256 PKCE authorization transaction")
+            return
+        }
+        #expect(activeProvider == provider)
+        oauth.authorize(provider: provider)
+        guard case .authorizing(_, let nextGrant) = oauth.state,
+              case .pkce(let secondPKCE) = nextGrant else {
+            Issue.record("Expected a second S256 PKCE transaction")
+            return
+        }
+        #expect(firstPKCE.state != secondPKCE.state)
+        #expect(firstPKCE.codeVerifier != secondPKCE.codeVerifier)
 
         // Empty
         try oauth.clear()

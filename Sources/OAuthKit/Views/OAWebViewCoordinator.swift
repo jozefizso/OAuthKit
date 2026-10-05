@@ -33,37 +33,9 @@ public class OAWebViewCoordinator: NSObject {
     ///   - provider: the oauth provider
     ///   - grantType: the grant type to handle
     private func handle(url: URL, provider: OAuth.Provider, grantType: OAuth.GrantType) {
-
-        guard let redirectURI = provider.redirectURI, url.absoluteString.starts(with: redirectURI) else { return }
-        let urlComponents = URLComponents(string: url.absoluteString)
-        let queryItems = urlComponents?.queryItems ?? []
-        guard queryItems.isNotEmpty else { return }
-        guard let code = queryItems.filter({ $0.name == "code"}).first?.value else { return }
-        guard let state = queryItems.filter({ $0.name == "state"}).first?.value else { return }
-
-        switch grantType {
-        case .authorizationCode(let authCodeState):
-
-            guard state == authCodeState else {
-                if provider.debug {
-                    debugPrint("OAuth callback state mismatch, provider: \(provider.id)")
-                }
-                return
-            }
-            // Exchange the code for a token
-            oauth.token(provider: provider, code: code)
-        case .pkce(let pkce):
-            guard state == pkce.state else {
-                if provider.debug {
-                    debugPrint("OAuth callback state mismatch, provider: \(provider.id)")
-                }
-                return
-            }
-            // Exchange the code for a token along with the pkce validation data
-            oauth.token(provider: provider, code: code, pkce: pkce)
-        case .clientCredentials, .deviceCode, .refreshToken:
-            break
-        }
+        _ = provider
+        _ = grantType
+        oauth.handleAuthorizationCallback(url)
     }
 
     /// Handles oauth state changes.

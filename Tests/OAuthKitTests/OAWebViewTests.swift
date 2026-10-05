@@ -63,44 +63,26 @@ final class OAWebViewTests {
     /// Tests the OAWebViewCoordinator coordinator policy decisions.
     @Test("Coordinator Policy Decisons")
     func whenCoordinatorDecidingPolicy() async throws {
-
-        // 1) Bad Request Expectations
-        let coordinator: OAWebViewCoordinator = webView.makeCoordinator()
-        #expect(coordinator.oauth.state == oauth.state)
+        let coordinator = webView.makeCoordinator()
         let wkWebView = webView.view
-
-        var urlRequest: URLRequest = .init(url: URL(string: "https://github.com/codefiesta/OAuthKit")!)
-        urlRequest.url = nil
-
-        var navigationAction: WKNavigationAction = OAuthTestWKNavigationAction(urlRequest: urlRequest)
-        var policy = await coordinator.webView(wkWebView, decidePolicyFor: navigationAction)
+        var request = URLRequest(url: URL(string: "https://github.com/codefiesta/OAuthKit")!)
+        request.url = nil
+        var action = OAuthTestWKNavigationAction(urlRequest: request)
+        var policy = await coordinator.webView(wkWebView, decidePolicyFor: action)
         #expect(policy == .cancel)
 
-        // 2) Authorization Code Expectations
-        let state: String = .secureRandom()
-        let code: String = .secureRandom()
-
-        oauth.authorize(provider: provider, grantType: .authorizationCode(state))
+        let code = String.secureRandom()
+        oauth.authorize(provider: provider)
+        guard case .authorizing(_, .pkce(let pkce)) = oauth.state else {
+            Issue.record("Expected generated PKCE authorization")
+            return
+        }
         coordinator.update(state: oauth.state)
-        var urlString = provider.redirectURI! + "?code=\(code)&state=\(state)"
-        urlRequest = .init(url: URL(string: urlString)!)
-
-        navigationAction = OAuthTestWKNavigationAction(urlRequest: urlRequest)
-        policy = await coordinator.webView(wkWebView, decidePolicyFor: navigationAction)
+        request = URLRequest(url: URL(string: provider.redirectURI! + "?code=\(code)&state=\(pkce.state)")!)
+        action = OAuthTestWKNavigationAction(urlRequest: request)
+        policy = await coordinator.webView(wkWebView, decidePolicyFor: action)
         #expect(policy == .allow)
-
-        // 3) PKCE Expectations
-        let pkce: OAuth.PKCE = .init()
-        oauth.authorize(provider: provider, grantType: .pkce(pkce))
-        coordinator.update(state: oauth.state)
-        urlString = provider.redirectURI! + "?code=\(code)&state=\(pkce.state)"
-        urlRequest = .init(url: URL(string: urlString)!)
-
-        navigationAction = OAuthTestWKNavigationAction(urlRequest: urlRequest)
-        policy = await coordinator.webView(wkWebView, decidePolicyFor: navigationAction)
-        #expect(policy == .allow)
-        let result = await waitForAuthorization()
-        #expect(result == true)
+        #expect(await waitForAuthorization())
     }
 
     /// Tests to make sure the coordinator doesn't being requesting access tokens when we've detected state mismatches.
@@ -114,27 +96,17 @@ final class OAWebViewTests {
 
         var urlRequest: URLRequest = .init(url: URL(string: "https://github.com/codefiesta/OAuthKit")!)
 
-        // 2) Authorization Code Expectations
-        let state: String = .secureRandom()
-        let code: String = .secureRandom()
-
-        oauth.authorize(provider: provider, grantType: .authorizationCode(state))
-        let urlString = provider.redirectURI! + "?code=\(code)&state=ABC-123"
-        urlRequest = .init(url: URL(string: urlString)!)
-        var navigationAction: WKNavigationAction = OAuthTestWKNavigationAction(urlRequest: urlRequest)
-        var policy = await coordinator.webView(wkWebView, decidePolicyFor: navigationAction)
+        oauth.authorize(provider: provider)
+        guard case .authorizing(_, .pkce(let pkce)) = oauth.state else {
+            Issue.record("Expected generated PKCE authorization")
+            return
+        }
+        let urlString = provider.redirectURI! + "?code=\(String.secureRandom())&state=ABC-123"
+        urlRequest = URLRequest(url: URL(string: urlString)!)
+        let navigationAction = OAuthTestWKNavigationAction(urlRequest: urlRequest)
+        let policy = await coordinator.webView(wkWebView, decidePolicyFor: navigationAction)
         #expect(policy == .allow)
-        #expect(oauth.state != .requestingAccessToken(provider))
-
-        // 3) PKCE Expectations
-        let pkce: OAuth.PKCE = .init()
-        oauth.authorize(provider: provider, grantType: .pkce(pkce))
-        coordinator.update(state: oauth.state)
-
-        navigationAction = OAuthTestWKNavigationAction(urlRequest: urlRequest)
-        policy = await coordinator.webView(wkWebView, decidePolicyFor: navigationAction)
-        #expect(policy == .allow)
-        #expect(oauth.state != .requestingAccessToken(provider))
+        #expect(oauth.state == .authorizing(provider, .pkce(pkce)))
     }
 
     /// Streams the oauth status until we receive an authorization.

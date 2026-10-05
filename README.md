@@ -264,13 +264,10 @@ credentials without letting their contents become additional form parameters.
 
 
 ### OAuth 2.0 Authorization Code Flow
-The [Authorization Code](https://oauth.net/2/grant-types/authorization-code/) grant type is used by confidential and public clients to exchange an authorization code for an access token. It is recommended that all clients use the [PKCE](#oauth-20-pkce-flow) extension with this flow as well to provide better security.
+OAuthKit uses S256 PKCE for every interactive authorization-code flow and generates fresh unpredictable state and verifier values when `authorize(provider:)` starts. Callers cannot provide state or disable PKCE.
 
-```swift	
-// Generate a state and set the GrantType
-let state: String = .secureRandom(32) // See String+Extensions
-let grantType: OAuth.GrantType = .authorizationCode(state)
-oauth.authorize(provider: provider, grantType: grantType)
+```swift
+oauth.authorize(provider: provider)
 ```
 
 ### OAuth 2.0 PKCE Flow

@@ -12,12 +12,6 @@ extension OAuth {
     /// Provides an enum representation for the OAuth 2.0 Grant Types.
     public enum GrantType: Equatable, Sendable {
 
-        /// The OAuth 2.0 authorization code workflow.
-        /// See RFC 6749 Standard [OAuth 2.0 Authorization Code Grant Type](https://datatracker.ietf.org/doc/html/rfc6749#section-1.3.1)
-        /// - Parameters:
-        ///   - String: the state verification string used to prevent CSRF attacks
-        case authorizationCode(String)
-
         /// The OAuth 2.0 client credentials grant.
         /// See RFC 6749 Standard [OAuth 2.0 Client Credentials Code Grant Type](https://datatracker.ietf.org/doc/html/rfc6749#section-4.4)
         case clientCredentials
