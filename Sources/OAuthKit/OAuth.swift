@@ -67,6 +67,8 @@ public final class OAuth: Sendable {
 
     @ObservationIgnored
     var refreshTasks = [String: Task<Void, Never>]()
+    @ObservationIgnored
+    private var refreshIDs = [String: UUID]()
 
     @ObservationIgnored
     private let networkMonitor: NetworkMonitor = .shared
@@ -177,6 +179,7 @@ public extension OAuth {
         tasks.removeAll()
         for task in refreshTasks.values { task.cancel() }
         refreshTasks.removeAll()
+        refreshIDs.removeAll()
     }
 }
 
@@ -337,9 +340,11 @@ private extension OAuth {
     ///   - priority: the task priority
     func task(priority: TaskPriority = .high, operation: @escaping @MainActor () async -> Void) {
         let id = UUID()
+        let taskGeneration = generation
         let handle = Task { @MainActor [weak self] in
+            guard let self, generation == taskGeneration, !Task.isCancelled else { return }
             await operation()
-            self?.tasks.removeValue(forKey: id)
+            tasks.removeValue(forKey: id)
         }
         tasks[id] = handle
     }
@@ -365,6 +370,7 @@ extension OAuth {
         }
 
         guard let (data, response) = try? await urlSession.data(for: request, delegate: OAuthRedirectDelegate.shared) else {
+            guard transaction == generation, !Task.isCancelled else { return }
             return publish(state: .error(provider, .badResponse))
         }
         guard transaction == generation, !Task.isCancelled else { return }
@@ -399,13 +405,18 @@ extension OAuth {
             await active.value
             return
         }
+        let id = UUID()
         let expectedGeneration = generation
+        refreshIDs[key] = id
         let active = Task { @MainActor [weak self] in
             await self?.performRefreshToken(provider: provider, expectedGeneration: expectedGeneration)
         }
         refreshTasks[key] = active
         await active.value
-        refreshTasks.removeValue(forKey: key)
+        if refreshIDs[key] == id {
+            refreshIDs.removeValue(forKey: key)
+            refreshTasks.removeValue(forKey: key)
+        }
     }
 
     private func performRefreshToken(provider: Provider, expectedGeneration: UInt64) async {
@@ -428,6 +439,7 @@ extension OAuth {
         }
 
         guard let (data, response) = try? await urlSession.data(for: request, delegate: OAuthRedirectDelegate.shared) else {
+            guard expectedGeneration == generation, !Task.isCancelled else { return }
             return publish(state: .error(provider, .badResponse))
         }
         guard expectedGeneration == generation, !Task.isCancelled else { return }
