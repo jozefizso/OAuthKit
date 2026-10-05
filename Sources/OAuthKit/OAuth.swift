@@ -72,6 +72,8 @@ public final class OAuth: Sendable {
 
     @ObservationIgnored
     private let networkMonitor: NetworkMonitor = .shared
+    @ObservationIgnored
+    private var monitorTask: Task<Void, Never>?
 
     /// Configuration option determining if tokens should be auto refreshed or not.
     @ObservationIgnored
@@ -127,18 +129,18 @@ public extension OAuth {
     ///   - provider: the provider to begin authorization for
     ///   - grantType: the grant type to execute
     func authorize(provider: Provider, grantType: GrantType = .pkce(.init())) {
-        supersedeTasks()
         switch grantType {
-        case .authorizationCode:
-            state = .authorizing(provider, grantType)
-        case .pkce:
+        case .authorizationCode, .pkce:
+            supersedeTasks()
             state = .authorizing(provider, grantType)
         case .deviceCode:
+            supersedeTasks()
             state = .requestingDeviceCode(provider)
             task { [self] in
                 await requestDeviceCode(provider: provider)
             }
         case .clientCredentials:
+            supersedeTasks()
             guard provider.clientType == .confidential else {
                 return publish(state: .error(provider, .invalidClientConfiguration))
             }
@@ -172,6 +174,9 @@ public extension OAuth {
         state = .empty
     }
 
+}
+
+extension OAuth {
     /// Invalidates asynchronous work started by an earlier authorization flow.
     func supersedeTasks() {
         generation &+= 1
@@ -181,6 +186,7 @@ public extension OAuth {
         refreshTasks.removeAll()
         refreshIDs.removeAll()
     }
+    var activeTaskCount: Int { tasks.count }
 }
 
 // MARK: Private
@@ -269,7 +275,7 @@ private extension OAuth {
 
     /// Starts the network monitor.
     func monitor() {
-        task { [self] in
+        monitorTask = Task { @MainActor [networkMonitor] in
             await networkMonitor.start()
         }
     }
@@ -335,13 +341,14 @@ private extension OAuth {
         }
     }
 
-    /// Create and immediately start running a new detached task in the context of this actor.
+    /// Starts and retains an asynchronous operation until it completes.
     /// - Parameters:
     ///   - priority: the task priority
+    ///   - operation: the main-actor operation to run.
     func task(priority: TaskPriority = .high, operation: @escaping @MainActor () async -> Void) {
         let id = UUID()
         let taskGeneration = generation
-        let handle = Task { @MainActor [weak self] in
+        let handle = Task(priority: priority) { @MainActor [weak self] in
             guard let self, generation == taskGeneration, !Task.isCancelled else { return }
             await operation()
             tasks.removeValue(forKey: id)
@@ -408,8 +415,9 @@ extension OAuth {
         let id = UUID()
         let expectedGeneration = generation
         refreshIDs[key] = id
-        let active = Task { @MainActor [weak self] in
-            await self?.performRefreshToken(provider: provider, expectedGeneration: expectedGeneration)
+        let active = Task<Void, Never> { @MainActor [weak self] in
+            guard let self, generation == expectedGeneration, !Task.isCancelled else { return }
+            await performRefreshToken(provider: provider, expectedGeneration: expectedGeneration)
         }
         refreshTasks[key] = active
         await active.value
@@ -420,6 +428,7 @@ extension OAuth {
     }
 
     private func performRefreshToken(provider: Provider, expectedGeneration: UInt64) async {
+        guard expectedGeneration == generation, !Task.isCancelled else { return }
         let storedAuthorization: Authorization?
         do {
             storedAuthorization = try keychain.get(key: provider.id)
@@ -472,6 +481,7 @@ extension OAuth {
             return publish(state: .error(provider, .malformedURL))
         }
         guard let (data, response) = try? await urlSession.data(for: request, delegate: OAuthRedirectDelegate.shared) else {
+            guard transaction == generation, !Task.isCancelled else { return }
             return publish(state: .error(provider, .badResponse))
         }
         guard transaction == generation, !Task.isCancelled else { return }
@@ -500,6 +510,7 @@ extension OAuth {
             return publish(state: .error(provider, .invalidClientConfiguration))
         }
         guard let (data, response) = try? await urlSession.data(for: request, delegate: OAuthRedirectDelegate.shared) else {
+            guard transaction == generation, !Task.isCancelled else { return }
             return publish(state: .error(provider, .badResponse))
         }
         guard transaction == generation, !Task.isCancelled else { return }

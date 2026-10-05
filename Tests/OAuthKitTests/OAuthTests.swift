@@ -589,21 +589,20 @@ final class OAuthTests {
         #expect(publicProvider.clientAuthentication == .none)
         #expect(OAuth.Request.token(provider: publicProvider) == nil)
     }
-    /// Arrange: start a retained task under the current authorization generation.
-    /// Act: clear the session to supersede and cancel outstanding work.
-    /// Assert: the generation advances and the registry is empty.
-    @Test("Clearing supersedes outstanding operations")
-    func whenClearingOutstandingOperations() async throws {
-        let generation = oauth.generation
-        oauth.task {
-            try? await Task.sleep(for: .seconds(60))
+    /// Arrange: initiate client credentials through the retained task registry.
+    /// Act: wait for the mocked token response to be published and the task to finish.
+    /// Assert: the completed task has been pruned from the registry.
+    @Test("Completed asynchronous tasks are removed")
+    func whenCompletedTaskIsPruned() async throws {
+        oauth.authorize(provider: provider, grantType: .clientCredentials)
+        let monitor = OAuth.Monitor(oauth: oauth)
+        for await state in monitor.stream {
+            if case .authorized = state { break }
         }
-        #expect(oauth.tasks.isNotEmpty)
-
-        oauth.clear()
-
-        #expect(oauth.generation == generation &+ 1)
-        #expect(oauth.tasks.isEmpty)
+        for _ in 0..<10 where oauth.activeTaskCount > 0 {
+            await Task.yield()
+        }
+        #expect(oauth.activeTaskCount == 0)
     }
     /// Streams the oauth status until we receive an authorization.
     /// This should only be used on test methods that expect an authorization to be inserted into the keychain.

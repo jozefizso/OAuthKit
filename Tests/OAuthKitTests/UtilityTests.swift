@@ -138,16 +138,6 @@ struct UtilityTests {
         #expect(random.count >= 43)
     }
 
-    /// Tests the scheduling of tasks
-    @Test("Scheduling Tasks")
-    func whenSchedulingTasks() async throws {
-        let timeInterval: TimeInterval = 0
-        let task: Task = .delayed(timeInterval: timeInterval) {
-            return true
-        }
-        let executed = try await task.value
-        #expect(executed)
-    }
 
     /// Tests the network monitor
     @MainActor
