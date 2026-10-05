@@ -12,6 +12,8 @@ import FoundationNetworking
 
 private let httpPost = "POST"
 private let httpAcceptHeaderField = "Accept"
+private let httpContentTypeHeaderField = "Content-Type"
+private let formMimeType = "application/x-www-form-urlencoded"
 private let jsonMimeType = "application/json"
 private let responseTypeCode = "code"
 
@@ -80,23 +82,12 @@ extension OAuth {
         ///   - pkce: the pkce data
         /// - Returns: a `/token` url request
         static func token(provider: Provider, code: String, pkce: PKCE? = nil) -> URLRequest? {
-            guard var urlComponents = URLComponents(string: provider.accessTokenURL.absoluteString) else { return nil }
             let queryItems = buildQueryItems(provider: provider, code: code, pkce: pkce)
-            urlComponents.queryItems = queryItems
-
-            guard var url = urlComponents.url else { return nil }
-
-            // If we're encoding the http body, rebuild the url without the query items
-            if provider.encodeHttpBody {
-                urlComponents = URLComponents()
-                urlComponents.queryItems = queryItems
-                url = provider.accessTokenURL
-            }
-
-            var request = URLRequest(url: url)
-            request.httpBody = provider.encodeHttpBody ? urlComponents.query?.data(using: .utf8) : nil
+            var request = URLRequest(url: provider.accessTokenURL)
+            request.httpBody = formEncoded(queryItems).data(using: .utf8)
             request.httpMethod = httpPost
             request.setValue(jsonMimeType, forHTTPHeaderField: httpAcceptHeaderField)
+            request.setValue(formMimeType, forHTTPHeaderField: httpContentTypeHeaderField)
             return request
         }
 
@@ -106,12 +97,12 @@ extension OAuth {
         ///   - deviceCode: the device code data
         /// - Returns: a  `/token` request that can be used for polling
         static func token(provider: Provider, deviceCode: DeviceCode) -> URLRequest? {
-            guard var urlComponents = URLComponents(string: provider.accessTokenURL.absoluteString) else { return nil }
-            urlComponents.queryItems = buildQueryItems(provider: provider, deviceCode: deviceCode)
-            guard let url = urlComponents.url else { return nil }
-            var request = URLRequest(url: url)
+            let queryItems = buildQueryItems(provider: provider, deviceCode: deviceCode)
+            var request = URLRequest(url: provider.accessTokenURL)
+            request.httpBody = formEncoded(queryItems).data(using: .utf8)
             request.httpMethod = httpPost
             request.setValue(jsonMimeType, forHTTPHeaderField: httpAcceptHeaderField)
+            request.setValue(formMimeType, forHTTPHeaderField: httpContentTypeHeaderField)
             return request
         }
 
@@ -120,23 +111,12 @@ extension OAuth {
         ///   - provider: the oauth provider
         /// - Returns: the url request
         static func token(provider: Provider) -> URLRequest? {
-            guard var urlComponents = URLComponents(string: provider.accessTokenURL.absoluteString) else { return nil }
             guard let queryItems = buildQueryItems(provider: provider, grantType: .clientCredentials) else { return nil }
-            urlComponents.queryItems = queryItems
-
-            guard var url = urlComponents.url else { return nil }
-
-            // If we're encoding the http body, rebuild the url without the query items
-            if provider.encodeHttpBody {
-                urlComponents = URLComponents()
-                urlComponents.queryItems = queryItems
-                url = provider.accessTokenURL
-            }
-
-            var request = URLRequest(url: url)
-            request.httpBody = provider.encodeHttpBody ? urlComponents.query?.data(using: .utf8) : nil
+            var request = URLRequest(url: provider.accessTokenURL)
+            request.httpBody = formEncoded(queryItems).data(using: .utf8)
             request.httpMethod = httpPost
             request.setValue(jsonMimeType, forHTTPHeaderField: httpAcceptHeaderField)
+            request.setValue(formMimeType, forHTTPHeaderField: httpContentTypeHeaderField)
             return request
         }
 
@@ -145,13 +125,16 @@ extension OAuth {
         ///   - provider: the oauth provider
         /// - Returns: the url request
         static func device(provider: Provider) -> URLRequest? {
-            guard let deviceCodeURL = provider.deviceCodeURL,
-                  var urlComponents = URLComponents(string: deviceCodeURL.absoluteString) else { return nil }
-            urlComponents.queryItems = buildQueryItems(provider: provider, grantType: .deviceCode)
-            guard let url = urlComponents.url else { return nil }
-            var request = URLRequest(url: url)
+            guard let deviceCodeURL = provider.deviceCodeURL else { return nil }
+            let queryItems = [
+                URLQueryItem(key: .clientID, value: provider.clientID),
+                URLQueryItem(key: .scope, value: provider.scope?.joined(separator: " "))
+            ]
+            var request = URLRequest(url: deviceCodeURL)
+            request.httpBody = formEncoded(queryItems).data(using: .utf8)
             request.httpMethod = httpPost
             request.setValue(jsonMimeType, forHTTPHeaderField: httpAcceptHeaderField)
+            request.setValue(formMimeType, forHTTPHeaderField: httpContentTypeHeaderField)
             return request
         }
 
@@ -256,6 +239,22 @@ extension OAuth {
                 queryItems.append(URLQueryItem(key: .scope, value: scope.joined(separator: " ")))
             }
             return queryItems
+        }
+        /// Encodes query items using UTF-8 application/x-www-form-urlencoded rules.
+        private static func formEncoded(_ queryItems: [URLQueryItem]) -> String {
+            queryItems.compactMap { item in
+                guard let value = item.value else { return nil }
+                return "\(formEncode(item.name))=\(formEncode(value))"
+            }.joined(separator: "&")
+        }
+
+        private static func formEncode(_ value: String) -> String {
+            let unreserved = Set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~".utf8)
+            return value.utf8.map { byte in
+                if unreserved.contains(byte) { return String(UnicodeScalar(byte)) }
+                if byte == 0x20 { return "+" }
+                return String(format: "%%%02X", byte)
+            }.joined()
         }
     }
 }
