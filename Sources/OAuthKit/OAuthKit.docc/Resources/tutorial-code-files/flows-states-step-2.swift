@@ -33,7 +33,8 @@ struct ContentView: View {
                 Text("Requesting Device Code [\(provider.id)]")
             case .authorized(let provider, _):
                 Button("Authorized [\(provider.id)]") {
-                    oauth.clear()
+                    do { try oauth.clear() }
+                    catch { oauth.state = .error(provider, .keychain) }
                 }
             case .receivedDeviceCode(_, let deviceCode):
                 Text("To login, visit")
