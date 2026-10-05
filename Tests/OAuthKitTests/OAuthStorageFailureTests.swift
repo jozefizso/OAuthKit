@@ -7,6 +7,43 @@ import Testing
 @MainActor
 @Suite("OAuth storage failure handling")
 struct OAuthStorageFailureTests {
+    /// Default storage must not share mutable protection settings across clients.
+    @Test("Default Keychain authentication policies are instance-local")
+    func defaultAuthenticationPoliciesAreIndependent() {
+        // Arrange
+        let protected = Keychain.default
+        let unprotected = Keychain.default
+
+        // Act
+        protected.requiresAuthentication = true
+
+        // Assert
+        #expect(unprotected.requiresAuthentication == false)
+    }
+
+    /// A new client without the biometric option must not restore a token whose
+    /// protection is enforced by the OS, even when it uses the same namespace.
+    @Test("A secondary OAuth client cannot restore a biometric-protected item")
+    func secondaryClientCannotBypassItemProtection() throws {
+        // Arrange
+        let provider = makeProvider()
+        let namespace = "oauthkit.test.\(UUID().uuidString)"
+        let protected = Keychain(namespace)
+        protected.requiresAuthentication = true
+        let token = OAuth.Token(
+            accessToken: "protected-access-token", refreshToken: "protected-refresh-token",
+            expiresIn: 3600, scope: nil, type: "Bearer"
+        )
+        try protected.set(OAuth.Authorization(issuer: provider.id, token: token), for: provider.id)
+        defer { _ = try? protected.clear() }
+
+        // Act
+        let secondary = OAuth(providers: [provider], options: [.applicationTag: namespace])
+
+        // Assert
+        #expect(secondary.state == .error(provider, .keychain))
+    }
+
     /// A missing authorization is normal; cancellation of a protected read is
     /// not. A secondary OAuth instance must not hide authentication failure as logout.
     @Test("Restoration distinguishes missing credentials from cancelled authentication")
