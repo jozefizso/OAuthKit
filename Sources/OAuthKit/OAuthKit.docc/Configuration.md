@@ -63,7 +63,7 @@ let oauth: OAuth = .init(.module, options: options)
 ```
 
 ### Keychain Protection
-The ``OAuth/Option/requireAuthenticationWithBiometricsOrCompanion`` option allows you to protect access to your keychain items with biometrics until successful local authentication. If the ``OAuth/Option/requireAuthenticationWithBiometricsOrCompanion`` option is set to true, the device owner will need to be authenticated by biometry or a companion device before keychain items (tokens) can be accessed. OAuthKit uses a default LAContext, but if you need fine-grained control while evaluating a user’s identity, pass your own custom LAContext to the options via the ``OAuth/Option/localAuthentication`` option.
+The ``OAuth/Option/requireBiometricAuthentication`` option protects each stored token item using the Keychain's biometric-current-set access-control policy. The system requires biometric authentication on each protected read, including token refreshes and reads by other OAuth instances; an initializer-only authentication check does not unlock items. Authentication cancellation, missing contexts, and unsupported biometrics fail closed. Existing items without Keychain access control are rejected while biometric protection is enabled. Items are bound to the currently enrolled biometric set and become unavailable if that set changes. Supply an ``OAuth/Option/localAuthentication`` context to control the system authentication prompt. On macOS, OAuthKit selects the data-protection Keychain for all operations; the host executable's entitlements and user-session context determine availability.
 
 ```swift
 // Custom LAContext

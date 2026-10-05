@@ -8,6 +8,9 @@
 import Foundation
 #if canImport(Security)
 import Security
+#if canImport(LocalAuthentication) && !os(tvOS)
+import LocalAuthentication
+#endif
 #endif
 
 #if canImport(Security)
@@ -17,17 +20,24 @@ enum KeychainSecurityOperation: Equatable {
 #endif
 /// The default account to use.
 private let defaultAccount = "oauthkit"
-/// The default token identifier suffix.
 private let tokenIdentifier = "oauth-token"
 
+#if canImport(Security)
+private func platformScopedKeychainQuery(_ query: [String: Any]) -> [String: Any] {
+    #if os(macOS)
+    var query = query
+    query[kSecUseDataProtectionKeychain as String] = true
+    return query
+    #else
+    return query
+    #endif
+}
+#endif
 extension Keychain {
-
     /// Storage operations used for sensitive data.
     protocol Storage {
-        /// The owning account identifier.
         init(account: String)
         var account: String { get }
-        /// Returns keys in this account; query failures are thrown.
         var keys: [String] { get throws }
         func set(_ data: Data, for key: String) throws -> Bool
         func get(key: String) throws -> Data?
@@ -41,6 +51,10 @@ extension Keychain {
     struct DefaultStorage: Storage {
         var account: String = defaultAccount
         var statusOverride: ((KeychainSecurityOperation) -> OSStatus?)?
+        var requiresAuthentication = false
+        #if canImport(LocalAuthentication) && !os(tvOS)
+        var authenticationContext: LAContext?
+        #endif
 
         init(account: String) { self.account = account }
 
@@ -51,12 +65,12 @@ extension Keychain {
 
         var keys: [String] {
             get throws {
-                let query: [String: Any] = [
+                let query = platformScopedKeychainQuery([
                     kSecClass as String: kSecClassGenericPassword,
                     kSecAttrService as String: account,
                     kSecReturnAttributes as String: true,
                     kSecMatchLimit as String: kSecMatchLimitAll
-                ]
+                ])
                 var result: AnyObject?
                 let status = statusOverride?(.copy) ?? withUnsafeMutablePointer(to: &result) { pointer in
                     SecItemCopyMatching(query as CFDictionary, UnsafeMutablePointer(pointer))
@@ -72,61 +86,87 @@ extension Keychain {
         @discardableResult
         func set(_ data: Data, for key: String) throws -> Bool {
             assert(key.isNotEmpty, "❌ The keychain key cannot be empty.")
-            let query: [String: Any] = [
+            let query = platformScopedKeychainQuery([
                 kSecClass as String: kSecClassGenericPassword,
                 kSecAttrService as String: account,
                 kSecAttrAccount as String: accountKey(key)
-            ]
-            let attributes: [String: Any] = [kSecValueData as String: data]
+            ])
+            var attributes: [String: Any] = [kSecValueData as String: data]
+            if requiresAuthentication {
+                var accessError: Unmanaged<CFError>?
+                guard let access = SecAccessControlCreateWithFlags(nil, kSecAttrAccessibleWhenUnlockedThisDeviceOnly, .biometryCurrentSet, &accessError) else {
+                    throw accessError?.takeRetainedValue() ?? KeychainError.securityStatus(errSecAuthFailed)
+                }
+                attributes[kSecAttrAccessControl as String] = access
+            }
             let updateStatus = statusOverride?(.update) ?? SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
             if updateStatus == errSecSuccess { return true }
             guard updateStatus == errSecItemNotFound else { throw KeychainError.securityStatus(updateStatus) }
             var item = query
             item[kSecValueData as String] = data
+            if let accessControl = attributes[kSecAttrAccessControl as String] {
+                item[kSecAttrAccessControl as String] = accessControl
+            }
             let addStatus = statusOverride?(.add) ?? SecItemAdd(item as CFDictionary, nil)
             guard addStatus == errSecSuccess else { throw KeychainError.securityStatus(addStatus) }
             return true
         }
 
-        /// Fetches data for one deterministic key in this exact service.
+        /// Reads each protected item only through its supplied authentication context.
         func get(key: String) throws -> Data? {
-            let query: [String: Any] = [
+            var query = platformScopedKeychainQuery([
                 kSecClass as String: kSecClassGenericPassword,
                 kSecAttrService as String: account,
                 kSecMatchLimit as String: kSecMatchLimitOne,
                 kSecAttrAccount as String: accountKey(key),
                 kSecReturnData as String: true
-            ]
+            ])
+            if requiresAuthentication {
+                query[kSecReturnAttributes as String] = true
+            }
+            #if canImport(LocalAuthentication) && !os(tvOS)
+            if let authenticationContext {
+                query[kSecUseAuthenticationContext as String] = authenticationContext
+            } else if requiresAuthentication {
+                throw KeychainError.securityStatus(errSecAuthFailed)
+            }
+            #else
+            if requiresAuthentication { throw KeychainError.securityStatus(errSecAuthFailed) }
+            #endif
             var result: AnyObject?
             let status = statusOverride?(.copy) ?? withUnsafeMutablePointer(to: &result) { pointer in
                 SecItemCopyMatching(query as CFDictionary, UnsafeMutablePointer(pointer))
             }
-            if status == errSecItemNotFound { return nil }
-            guard status == errSecSuccess else { throw KeychainError.securityStatus(status) }
+            if requiresAuthentication {
+                guard let item = result as? [String: Any],
+                      item[kSecAttrAccessControl as String] != nil,
+                      let data = item[kSecValueData as String] as? Data else {
+                    throw KeychainError.securityStatus(errSecAuthFailed)
+                }
+                return data
+            }
             guard let data = result as? Data else { throw KeychainError.securityStatus(errSecDecode) }
             return data
         }
 
-        /// Deletes all generic-password items in this exact service namespace.
         @discardableResult
         func clear() throws -> Bool {
-            let query: [String: Any] = [
+            let query = platformScopedKeychainQuery([
                 kSecClass as String: kSecClassGenericPassword,
                 kSecAttrService as String: account
-            ]
+            ])
             let status = statusOverride?(.delete) ?? SecItemDelete(query as CFDictionary)
             if status == errSecSuccess || status == errSecItemNotFound { return true }
             throw KeychainError.securityStatus(status)
         }
 
-        /// Deletes one item in this exact service namespace.
         @discardableResult
         func delete(key: String) throws -> Bool {
-            let query: [String: Any] = [
+            let query = platformScopedKeychainQuery([
                 kSecClass as String: kSecClassGenericPassword,
                 kSecAttrService as String: account,
                 kSecAttrAccount as String: key
-            ]
+            ])
             let status = statusOverride?(.delete) ?? SecItemDelete(query as CFDictionary)
             if status == errSecSuccess { return true }
             if status == errSecItemNotFound { return false }
@@ -137,7 +177,6 @@ extension Keychain {
 }
 
 extension Keychain.Storage {
-    /// Builds a deterministic account key for the specified OAuth key.
     func accountKey(_ key: String) -> String {
         account + "." + key + "." + tokenIdentifier
     }

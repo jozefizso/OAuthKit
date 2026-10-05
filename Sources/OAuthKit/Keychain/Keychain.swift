@@ -9,6 +9,9 @@ import Foundation
 #if canImport(Security)
 import Security
 #endif
+#if canImport(LocalAuthentication) && !os(tvOS)
+import LocalAuthentication
+#endif
 
 #if canImport(Security)
 /// Errors returned by Keychain storage operations.
@@ -21,6 +24,41 @@ class Keychain: @unchecked Sendable {
 
     static var `default`: Keychain { Keychain() }
     private let lock = NSLock()
+    #if canImport(Security)
+    /// Whether keychain values require item-level biometric authentication.
+    var requiresAuthentication: Bool {
+        get {
+            lock.lock()
+            defer { lock.unlock() }
+            return (storage as? DefaultStorage)?.requiresAuthentication ?? false
+        }
+        set {
+            lock.lock()
+            defer { lock.unlock() }
+            guard var defaultStorage = storage as? DefaultStorage else { return }
+            defaultStorage.requiresAuthentication = newValue
+            storage = defaultStorage
+        }
+    }
+
+    #if canImport(LocalAuthentication) && !os(tvOS)
+    /// Context supplied to Security for every read of an authenticated item.
+    var authenticationContext: LAContext? {
+        get {
+            lock.lock()
+            defer { lock.unlock() }
+            return (storage as? DefaultStorage)?.authenticationContext
+        }
+        set {
+            lock.lock()
+            defer { lock.unlock() }
+            guard var defaultStorage = storage as? DefaultStorage else { return }
+            defaultStorage.authenticationContext = newValue
+            storage = defaultStorage
+        }
+    }
+    #endif
+    #endif
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
     private var storage: Storage? = nil
@@ -47,9 +85,9 @@ class Keychain: @unchecked Sendable {
     /// Queries the keychain for keys; errors are not converted into an empty result.
     var keys: [String] {
         get throws {
-            guard let storage else { return [] }
             lock.lock()
             defer { lock.unlock() }
+            guard let storage else { return [] }
             return try storage.keys
         }
     }

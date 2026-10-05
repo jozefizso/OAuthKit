@@ -34,10 +34,9 @@ public extension OAuth.Option {
     /// A key used for providing a custom local authentication object.
     static let localAuthentication: OAuth.Option = .init(rawValue: "localAuthentication")
 
-    /// A key used for determining if the keychain should be protected with biometrics until successful local authentication.
-    /// If set to true, the device owner will need to be authenticated by biometry or a companion device before the keychain items can be accessed.
-    /// Important: developers should set the requireAuthenticationWithBiometricsOrCompanionReason that will be eventually displayed in the authentication dialog.
-    static let requireAuthenticationWithBiometricsOrCompanion: OAuth.Option = . init(rawValue: "requireAuthenticationWithBiometricsOrCompanion")
+    /// A key used to require biometric authentication for every protected keychain item access.
+    /// Authentication is enforced by Keychain access control on every read and write.
+    static let requireBiometricAuthentication: OAuth.Option = .init(rawValue: "requireBiometricAuthentication")
 
     /// A key used for providing a custom url session.
     static let urlSession: OAuth.Option = .init(rawValue: "urlSession")

@@ -130,4 +130,59 @@ final class KeychainTests {
             let _: Int? = try keychain.get(key: "decode")
         }
     }
+#if canImport(Security) && canImport(LocalAuthentication) && !os(tvOS)
+    /// Arrange a protected store without an authentication context; reading must fail instead of returning an unprotected empty value.
+    @Test("Protected reads fail closed without a context")
+    func protectedReadsRequireAuthenticationContext() throws {
+        // Arrange
+        keychain.requiresAuthentication = true
+        keychain.authenticationContext = nil
+
+        // Act / Assert
+        #expect(throws: (any Error).self) {
+            let _: String? = try keychain.get(key: "missing")
+        }
+    }
+    /// Arrange a genuinely biometric-protected item and a separate instance lacking its authentication context.
+    @Test("Secondary protected instances cannot read without authentication")
+    func secondaryInstanceCannotBypassProtection() throws {
+        // Arrange
+        let tag = "oauthkit.test." + String.secureRandom()
+        let protectedWriter = Keychain(tag)
+        protectedWriter.requiresAuthentication = true
+        let secondary = Keychain(tag)
+        secondary.requiresAuthentication = true
+        secondary.authenticationContext = nil
+        defer {
+            _ = try? protectedWriter.clear()
+        }
+        try protectedWriter.set("secret", for: "token")
+
+        // Act / Assert
+        #expect(throws: (any Error).self) {
+            let _: String? = try secondary.get(key: "token")
+        }
+    }
+    /// Arrange a legacy unprotected item, enable biometric mode on another instance, and assert it is rejected.
+    @Test("Enabling biometric mode rejects existing unprotected items")
+    func unprotectedItemsAreNotReturnedAfterEnablingBiometrics() throws {
+        // Arrange
+        let tag = "oauthkit.test." + String.secureRandom()
+        let unprotectedWriter = Keychain(tag)
+        try unprotectedWriter.set("legacy-token", for: "provider")
+        let protectedReader = Keychain(tag)
+        protectedReader.requiresAuthentication = true
+        let context = LAContext()
+        context.interactionNotAllowed = true
+        protectedReader.authenticationContext = context
+        defer {
+            _ = try? unprotectedWriter.clear()
+        }
+
+        // Act / Assert
+        #expect(throws: (any Error).self) {
+            let _: String? = try protectedReader.get(key: "provider")
+        }
+    }
+#endif
 }
