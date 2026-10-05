@@ -21,6 +21,7 @@ extension OAuth {
 
     /// OAuth URL Request Builder
     struct Request {
+        private static let formHexDigits = Array("0123456789ABCDEF".utf8)
 
         /// Provides constants for URLQueryItem keys.
         fileprivate enum Key: String {
@@ -84,7 +85,7 @@ extension OAuth {
         static func token(provider: Provider, code: String, pkce: PKCE? = nil) -> URLRequest? {
             let queryItems = buildQueryItems(provider: provider, code: code, pkce: pkce)
             var request = URLRequest(url: provider.accessTokenURL)
-            request.httpBody = formEncoded(queryItems).data(using: .utf8)
+            request.httpBody = formEncoded(queryItems)
             request.httpMethod = httpPost
             request.setValue(jsonMimeType, forHTTPHeaderField: httpAcceptHeaderField)
             request.setValue(formMimeType, forHTTPHeaderField: httpContentTypeHeaderField)
@@ -99,7 +100,7 @@ extension OAuth {
         static func token(provider: Provider, deviceCode: DeviceCode) -> URLRequest? {
             let queryItems = buildQueryItems(provider: provider, deviceCode: deviceCode)
             var request = URLRequest(url: provider.accessTokenURL)
-            request.httpBody = formEncoded(queryItems).data(using: .utf8)
+            request.httpBody = formEncoded(queryItems)
             request.httpMethod = httpPost
             request.setValue(jsonMimeType, forHTTPHeaderField: httpAcceptHeaderField)
             request.setValue(formMimeType, forHTTPHeaderField: httpContentTypeHeaderField)
@@ -113,7 +114,7 @@ extension OAuth {
         static func token(provider: Provider) -> URLRequest? {
             guard let queryItems = buildQueryItems(provider: provider, grantType: .clientCredentials) else { return nil }
             var request = URLRequest(url: provider.accessTokenURL)
-            request.httpBody = formEncoded(queryItems).data(using: .utf8)
+            request.httpBody = formEncoded(queryItems)
             request.httpMethod = httpPost
             request.setValue(jsonMimeType, forHTTPHeaderField: httpAcceptHeaderField)
             request.setValue(formMimeType, forHTTPHeaderField: httpContentTypeHeaderField)
@@ -131,7 +132,7 @@ extension OAuth {
                 URLQueryItem(key: .scope, value: provider.scope?.joined(separator: " "))
             ]
             var request = URLRequest(url: deviceCodeURL)
-            request.httpBody = formEncoded(queryItems).data(using: .utf8)
+            request.httpBody = formEncoded(queryItems)
             request.httpMethod = httpPost
             request.setValue(jsonMimeType, forHTTPHeaderField: httpAcceptHeaderField)
             request.setValue(formMimeType, forHTTPHeaderField: httpContentTypeHeaderField)
@@ -240,21 +241,48 @@ extension OAuth {
             }
             return queryItems
         }
-        /// Encodes query items using UTF-8 application/x-www-form-urlencoded rules.
-        private static func formEncoded(_ queryItems: [URLQueryItem]) -> String {
-            queryItems.compactMap { item in
-                guard let value = item.value else { return nil }
-                return "\(formEncode(item.name))=\(formEncode(value))"
-            }.joined(separator: "&")
+        /// Encodes query items into one UTF-8 application/x-www-form-urlencoded buffer.
+        private static func formEncoded(_ queryItems: [URLQueryItem]) -> Data {
+            var capacity = max(queryItems.count - 1, 0)
+            for item in queryItems {
+                guard let value = item.value else { continue }
+                capacity += (item.name.utf8.count + value.utf8.count) * 3 + 1
+            }
+
+            var output = Data()
+            output.reserveCapacity(capacity)
+            var needsSeparator = false
+            for item in queryItems {
+                guard let value = item.value else { continue }
+                if needsSeparator { output.append(0x26) }
+                appendFormEncoded(item.name, to: &output)
+                output.append(0x3D)
+                appendFormEncoded(value, to: &output)
+                needsSeparator = true
+            }
+            return output
         }
 
         private static func formEncode(_ value: String) -> String {
-            let unreserved = Set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~".utf8)
-            return value.utf8.map { byte in
-                if unreserved.contains(byte) { return String(UnicodeScalar(byte)) }
-                if byte == 0x20 { return "+" }
-                return String(format: "%%%02X", byte)
-            }.joined()
+            var output: [UInt8] = []
+            output.reserveCapacity(value.utf8.count * 3)
+            appendFormEncoded(value, to: &output)
+            return String(decoding: output, as: UTF8.self)
+        }
+
+        private static func appendFormEncoded(_ value: String, to output: inout [UInt8]) {
+            for byte in value.utf8 {
+                switch byte {
+                case 0x41...0x5A, 0x61...0x7A, 0x30...0x39, 0x2D, 0x2E, 0x5F, 0x7E:
+                    output.append(byte)
+                case 0x20:
+                    output.append(0x2B)
+                default:
+                    output.append(0x25)
+                    output.append(formHexDigits[Int(byte >> 4)])
+                    output.append(formHexDigits[Int(byte & 0x0F)])
+                }
+            }
         }
     }
 }
