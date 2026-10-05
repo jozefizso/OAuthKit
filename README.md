@@ -241,6 +241,12 @@ A good resource to help understand the detailed steps involved in OAuth 2.0 auth
 oauth.authorize(provider: provider, grantType: grantType)
 ``` 
 
+Token and device authorization requests use UTF-8
+`application/x-www-form-urlencoded` bodies. Names and values are encoded
+individually: spaces become `+`, while literal plus signs, ampersands, percent
+signs, and Unicode bytes are escaped. This preserves provider-issued codes and
+credentials without letting their contents become additional form parameters.
+
 
 ### OAuth 2.0 Authorization Code Flow
 The [Authorization Code](https://oauth.net/2/grant-types/authorization-code/) grant type is used by confidential and public clients to exchange an authorization code for an access token. It is recommended that all clients use the [PKCE](#oauth-20-pkce-flow) extension with this flow as well to provide better security.
