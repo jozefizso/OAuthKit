@@ -41,7 +41,7 @@ class Keychain: @unchecked Sendable {
         }
     }
 
-    #if canImport(LocalAuthentication) && !os(tvOS)
+    #if os(macOS) || os(iOS) || os(visionOS)
     /// Context supplied to Security for every read of an authenticated item.
     var authenticationContext: LAContext? {
         get {
@@ -80,6 +80,11 @@ class Keychain: @unchecked Sendable {
         #elseif os(Linux)
         // TODO: Linux storage not implemented
         #endif
+    }
+
+    /// Initializes the wrapper with a storage implementation at the Security boundary.
+    init(storage: any Storage) {
+        self.storage = storage
     }
 
     /// Queries the keychain for keys; errors are not converted into an empty result.

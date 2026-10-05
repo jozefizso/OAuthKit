@@ -6,6 +6,9 @@
 //
 
 import Foundation
+#if os(macOS) || os(iOS) || os(visionOS)
+import LocalAuthentication
+#endif
 @testable import OAuthKit
 import Testing
 #if canImport(Security)
@@ -130,7 +133,7 @@ final class KeychainTests {
             let _: Int? = try keychain.get(key: "decode")
         }
     }
-#if canImport(Security) && canImport(LocalAuthentication) && !os(tvOS)
+#if canImport(Security) && (os(macOS) || os(iOS) || os(visionOS))
     /// Arrange a protected store without an authentication context; reading must fail instead of returning an unprotected empty value.
     @Test("Protected reads fail closed without a context")
     func protectedReadsRequireAuthenticationContext() throws {

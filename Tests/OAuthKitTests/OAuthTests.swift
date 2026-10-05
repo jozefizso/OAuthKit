@@ -68,21 +68,6 @@ final class OAuthTests {
         #expect(customOAuth.urlSession == Self.urlSession)
     }
 
-    @Test("When Requiring Local Authentication")
-    func whenRequiringAuthenticationWithBiometricsOrCompanion() async throws {
-        let appTag: String = .secureRandom()
-        var options: [OAuth.Option: Any] = [
-            .applicationTag: appTag,
-            .requireAuthenticationWithBiometricsOrCompanion: true,
-            .autoRefresh: true
-        ]
-        #if !os(tvOS)
-        options[.localAuthentication] = OAuthTestLAContext()
-        #endif
-        let customOAuth: OAuth = .init(.module, options: options)
-        #expect(customOAuth.providers.isNotEmpty)
-        #expect(customOAuth.requireAuthenticationWithBiometricsOrCompanion == true)
-    }
 
     @Test("When Restoring Authorizations")
     func whenRestoringAuthorizations() async throws {

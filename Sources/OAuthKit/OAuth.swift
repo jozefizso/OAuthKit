@@ -17,8 +17,8 @@ import Observation
 private let defaultResourceName = "oauth"
 /// The default file extension.
 private let defaultExtension = "json"
-/// The default reason for local authentication with biometrics or companion device.
-private let defaultAuthenticationWithBiometricsOrCompanionReason = "unlock keychain"
+/// The reason displayed when the OS authenticates a protected Keychain read.
+private let defaultKeychainAuthenticationReason = "Unlock OAuth credentials"
 
 /// Provides an enum of oauth errors.
 public enum OAError: Error {
@@ -57,16 +57,6 @@ public final class OAuth: Sendable {
     @ObservationIgnored
     var context: LAContext = .init()
 
-    var policy: LAPolicy = {
-        #if os(macOS) || os(iOS)
-        if #available(macOS 15.0, iOS 18.0, *) {
-            return .deviceOwnerAuthenticationWithBiometricsOrCompanion
-        }
-        return .deviceOwnerAuthenticationWithBiometrics
-        #else
-        return .deviceOwnerAuthenticationWithBiometrics
-        #endif
-    }()
 
     #endif
 
@@ -85,10 +75,6 @@ public final class OAuth: Sendable {
     @ObservationIgnored
     var useNonPersistentWebDataStore: Bool = false
 
-    /// Configuration option determining if the keychain should be protected with biometrics until sucessful local authentication.
-    /// If set to true, the device owner will need to be authenticated by biometry or a companion device before the keychain items can be accessed.
-    @ObservationIgnored
-    var requireAuthenticationWithBiometricsOrCompanion: Bool = false
 
     /// The json decoder
     @ObservationIgnored
@@ -100,6 +86,13 @@ public final class OAuth: Sendable {
     ///   - options: the configuration options to apply
     public init(providers: [Provider] = [Provider](), options: [Option: Any]? = nil) {
         self.providers = providers
+        configure(options)
+    }
+
+    /// Uses an explicit storage dependency without changing the public configuration API.
+    init(providers: [Provider], keychain: Keychain, options: [Option: Any]? = nil) {
+        self.providers = providers
+        self.keychain = keychain
         configure(options)
     }
 
@@ -190,8 +183,12 @@ private extension OAuth {
     /// Loads authorizations from the keychain.
     func loadAuthorizations() {
         for provider in providers {
-            if let authorization: OAuth.Authorization = try? keychain.get(key: provider.id) {
-                publish(state: .authorized(provider, authorization))
+            do {
+                if let authorization: OAuth.Authorization = try keychain.get(key: provider.id) {
+                    publish(state: .authorized(provider, authorization))
+                }
+            } catch {
+                publish(state: .error(provider, .keychain))
             }
         }
     }
@@ -212,10 +209,6 @@ private extension OAuth {
                 self.useNonPersistentWebDataStore = useNonPersistentWebDataStore
             }
 
-            // Keychain protection with biometrics or companion device
-            if let requireAuthenticationWithBiometricsOrCompanion = options[.requireAuthenticationWithBiometricsOrCompanion] as? Bool {
-                self.requireAuthenticationWithBiometricsOrCompanion = requireAuthenticationWithBiometricsOrCompanion
-            }
 
             // Override the local authentication context
             #if os(macOS) || os(iOS) || os(visionOS)
@@ -234,39 +227,26 @@ private extension OAuth {
                 self.keychain = .init(applicationTag)
             }
         }
-        monitor()
-        restore()
-    }
-
-    /// Restores state from storage. If the keychain is protected by biometrics with local authentication, then
-    /// the device owner needs to authenticate with biometrics or companion app before any tokens in the keychain can be accessed.
-    func restore() {
-        if requireAuthenticationWithBiometricsOrCompanion {
-            authenticateWithBiometricsOrCompanion()
-        } else {
-            loadAuthorizations()
-        }
-    }
-
-    /// Device owner will be authenticated by biometry or a companion device e.g. watch, mac, etc.
-    func authenticateWithBiometricsOrCompanion() {
-
+        #if canImport(Security)
+        keychain.requiresAuthentication = options?[.requireBiometricAuthentication] as? Bool ?? false
         #if os(macOS) || os(iOS) || os(visionOS)
-        let localizedReason = context.localizedReason.isNotEmpty ? context.localizedReason: defaultAuthenticationWithBiometricsOrCompanionReason
-        var error: NSError?
-        if context.canEvaluatePolicy(policy, error: &error) {
-            context.evaluatePolicy(policy, localizedReason: localizedReason) { [weak self] success, error in
-                guard let self, success else { return }
-                Task { @MainActor [self] in
-                    loadAuthorizations()
-                }
-            }
+        if context.localizedReason.isEmpty {
+            context.localizedReason = defaultKeychainAuthenticationReason
         }
-        #else
-        debugPrint("⚠️ Misconfigured option: `requireAuthenticationWithBiometricsOrCompanion` is set to true but the current platform does not support biometric authentication.")
-        loadAuthorizations()
+        keychain.authenticationContext = context
         #endif
+        #else
+        if options?[.requireBiometricAuthentication] as? Bool == true {
+            for provider in providers {
+                publish(state: .error(provider, .keychain))
+            }
+            return
+        }
+        #endif
+        monitor()
+        loadAuthorizations()
     }
+
 
     /// Starts the network monitor.
     func monitor() {
@@ -396,7 +376,13 @@ extension OAuth {
     /// - Parameters:
     ///   - provider: the provider to request a refresh token for
     func refreshToken(provider: Provider) async {
-        guard let auth: OAuth.Authorization = try? keychain.get(key: provider.id) else { return }
+        let storedAuthorization: Authorization?
+        do {
+            storedAuthorization = try keychain.get(key: provider.id)
+        } catch {
+            return publish(state: .error(provider, .keychain))
+        }
+        guard let auth = storedAuthorization else { return }
 
         // If we can't build a refresh request simply bail as no refresh token
         // was returned in the original auth request

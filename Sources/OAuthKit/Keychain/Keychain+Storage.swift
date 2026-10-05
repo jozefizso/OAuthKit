@@ -52,7 +52,7 @@ extension Keychain {
         var account: String = defaultAccount
         var statusOverride: ((KeychainSecurityOperation) -> OSStatus?)?
         var requiresAuthentication = false
-        #if canImport(LocalAuthentication) && !os(tvOS)
+        #if os(macOS) || os(iOS) || os(visionOS)
         var authenticationContext: LAContext?
         #endif
 
@@ -124,7 +124,7 @@ extension Keychain {
             if requiresAuthentication {
                 query[kSecReturnAttributes as String] = true
             }
-            #if canImport(LocalAuthentication) && !os(tvOS)
+            #if os(macOS) || os(iOS) || os(visionOS)
             if let authenticationContext {
                 query[kSecUseAuthenticationContext as String] = authenticationContext
             } else if requiresAuthentication {
@@ -137,6 +137,8 @@ extension Keychain {
             let status = statusOverride?(.copy) ?? withUnsafeMutablePointer(to: &result) { pointer in
                 SecItemCopyMatching(query as CFDictionary, UnsafeMutablePointer(pointer))
             }
+            if status == errSecItemNotFound { return nil }
+            guard status == errSecSuccess else { throw KeychainError.securityStatus(status) }
             if requiresAuthentication {
                 guard let item = result as? [String: Any],
                       item[kSecAttrAccessControl as String] != nil,

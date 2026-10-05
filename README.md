@@ -22,7 +22,7 @@ OAuthKit is a small, lightweight package that provides out of the box [Swift Con
 Key features include:
 
 - [Simple Configuration](#oauthkit-configuration)
-- [Keychain protection with biometrics or companion device](https://codefiesta.github.io/OAuthKit/documentation/oauthkit/configuration#Keychain-Protection)
+- [Item-level biometric Keychain protection](https://codefiesta.github.io/OAuthKit/documentation/oauthkit/configuration#Keychain-Protection)
 - [Private Browsing with non-persistent WebKit Datastores](https://codefiesta.github.io/OAuthKit/documentation/oauthkit/configuration#Private-Browsing)
 - [Custom URLSession](https://codefiesta.github.io/OAuthKit/documentation/oauthkit/configuration#URL-Session) configuration for complete control custom protocol specific data
 - [Observable State](https://codefiesta.github.io/OAuthKit/documentation/oauthkit/gettingstarted#Observing-OAuth-State) driven events to allow full control over when and if users are prompted to authenticate with an OAuth provider
@@ -217,7 +217,15 @@ let oauth: OAuth = .init(.main, options: options)
 ```
 
 ### OAuth initialized with Keychain protection and Private Browsing
-OAuthKit allows you to protect access to your keychain items with biometrics until successful local authentication. If the **.requireAuthenticationWithBiometricsOrCompanion** option is set to true, the device owner will need to be authenticated by biometry or a companion device before keychain items (tokens) can be accessed. OAuthKit uses a default [LAContext](https://developer.apple.com/documentation/localauthentication/lacontext), but if you need fine-grained control while evaluating a user’s identity, pass your own custom [LAContext](https://developer.apple.com/documentation/localauthentication/lacontext) to the options.
+Set `.requireBiometricAuthentication: true` to protect each stored token with
+Keychain `.biometryCurrentSet` access control. The OS enforces authentication on
+every protected read, including restoration and refresh; cancelling or denying
+authentication fails closed. This policy requires enrolled biometrics, does not
+allow a passcode or companion-device substitute, and invalidates protected items
+when biometric enrollment changes. Pass `.localAuthentication` to supply an
+`LAContext`. Existing unprotected items are rejected in biometric mode rather
+than silently treated as protected. Native macOS uses the Data Protection
+Keychain; the host needs the appropriate signing, entitlements, and user context.
 
 Developers can also implement private browsing by setting the **.useNonPersistentWebDataStore** option to true. This forces the [WKWebView](https://developer.apple.com/documentation/webkit/wkwebview) used during authorization flows to use a non-persistent data store, preventing data from being written to the file system.
 
@@ -226,12 +234,10 @@ Developers can also implement private browsing by setting the **.useNonPersisten
 // Custom LAContext
 let localAuthentication: LAContext = .init()
 localAuthentication.localizedReason = "read tokens from keychain"
-localAuthentication.localizedFallbackTitle = "Use password"
-localAuthentication.touchIDAuthenticationAllowableReuseDuration = 10
 
 let options: [OAuth.Option: Any] = [
     .localAuthentication: localAuthentication,
-    .requireAuthenticationWithBiometricsOrCompanion: true,
+    .requireBiometricAuthentication: true,
     .useNonPersistentWebDataStore: true,
 ]
 let oauth: OAuth = .init(.main, options: options)
