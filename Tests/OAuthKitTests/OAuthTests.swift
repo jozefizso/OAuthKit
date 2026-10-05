@@ -269,7 +269,7 @@ final class OAuthTests {
         try! oauth.keychain.set(auth, for: provider.id)
         await oauth.refreshToken(provider: provider)
         #expect(oauth.state == .error(provider, .decoding))
-        oauth.clear()
+        try oauth.clear()
 
         // Client Credentials
         await oauth.requestClientCredentials(provider: provider)
@@ -310,7 +310,7 @@ final class OAuthTests {
         try! oauth.keychain.set(auth, for: provider.id)
         await oauth.refreshToken(provider: provider)
         #expect(oauth.state == .error(provider, .badResponse))
-        oauth.clear()
+        try oauth.clear()
 
         // Client Credentials
         await oauth.requestClientCredentials(provider: provider)
@@ -410,7 +410,7 @@ final class OAuthTests {
         #expect(oauth.state == .authorizing(provider, grantType))
 
         // Empty
-        oauth.clear()
+        try oauth.clear()
         #expect(oauth.state == .empty)
     }
 
@@ -430,7 +430,11 @@ final class OAuthTests {
             case .empty, .error, .authorizing, .requestingAccessToken, .requestingDeviceCode, .receivedDeviceCode:
                 break
             case .authorized(_, _):
-                oauth.clear()
+                do { try oauth.clear() }
+                catch {
+                    Issue.record("Failed to clear authorization: \(error)")
+                    return false
+                }
                 return true
             }
         }

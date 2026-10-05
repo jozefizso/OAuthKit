@@ -158,10 +158,10 @@ public extension OAuth {
         }
     }
 
-    /// Removes all tokens and clears the OAuth state
-    func clear() {
-        debugPrint("⚠️ [Clearing oauth state]")
-        keychain.clear()
+    /// Removes this client's stored tokens. State becomes empty only after confirmed deletion.
+    /// - Throws: The storage error when deletion fails, leaving the current state unchanged.
+    func clear() throws {
+        guard try keychain.clear() else { throw OAError.keychain }
         state = .empty
     }
 }
@@ -396,7 +396,10 @@ extension OAuth {
         // If we can't build a refresh request simply bail as no refresh token
         // was returned in the original auth request
         guard let request = Request.refresh(provider: provider, token: auth.token) else {
-            if auth.isExpired { clear() }
+            if auth.isExpired {
+                do { try clear() }
+                catch { publish(state: .error(provider, .keychain)) }
+            }
             return
         }
 

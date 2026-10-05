@@ -100,7 +100,11 @@ struct ContentView: View {
                 Text("Requesting Device Code [\(provider.id)]")
             case .authorized(let provider, _):
                 Button("Authorized [\(provider.id)]") {
-                    oauth.clear()
+                    do { try oauth.clear() }
+                    catch {
+                        // Show a storage error; credentials were not confirmed deleted.
+                        oauth.state = .error(provider, .keychain)
+                    }
                 }
             case .receivedDeviceCode(_, let deviceCode):
                 Text("To login, visit")
@@ -188,6 +192,11 @@ let options: [OAuth.Option: Any] = [
 ]
 let oauth: OAuth = .init(providers: providers, options: options)
 ```
+
+Keychain records are isolated by the exact `.applicationTag` service namespace;
+use a distinct tag for each independent application or environment. `clear()`
+throws if storage deletion fails and publishes `.empty` only after confirmed
+deletion. Handle that error rather than telling the user logout succeeded.
 
 ### OAuth initialized with custom URLSession
 To support custom protocols or URL schemes that your app supports, developers can pass a custom **.urlSession** option that will allow the configuration of custom [URLProtocol](https://developer.apple.com/documentation/foundation/urlprotocol) classes that can handle the loading of protocol-specific URL data.
