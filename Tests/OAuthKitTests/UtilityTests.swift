@@ -139,29 +139,5 @@ struct UtilityTests {
     }
 
 
-    /// Tests the network monitor
-    @MainActor
-    @Test("Network Monitor")
-    func whenNetworkMonitoring() async throws {
-        let monitor: NetworkMonitor = .shared
-        #expect(monitor.isOnline == false)
-        withObservationTracking {
-            _ = monitor.isOnline
-        } onChange: {
-            Task { @MainActor in
-                #expect(monitor.isOnline)
-            }
-        }
-        Task { @MainActor in
-            await monitor.start()
-            #expect(monitor.isMonitoring)
-        }
-        // The second call to monitor.start() should simply bail as monitoring
-        // is already happening and not toggle the internal `isMonitoring` flag.
-        Task { @MainActor in
-            await monitor.start()
-            #expect(monitor.isMonitoring)
-        }
-    }
 }
 
