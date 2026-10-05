@@ -117,5 +117,17 @@ final class KeychainTests {
         storage.statusOverride = nil
         #expect(try storage.get(key: "provider") == oldValue)
     }
+
 #endif
+    /// Arrange a stored string and assert decoding it as another Codable type reports its decoding error.
+    @Test("Malformed stored values propagate decoding errors")
+    func decodingFailuresPropagate() throws {
+        // Arrange
+        try keychain.set("not-an-integer", for: "decode")
+
+        // Act / Assert
+        #expect(throws: (any Error).self) {
+            let _: Int? = try keychain.get(key: "decode")
+        }
+    }
 }

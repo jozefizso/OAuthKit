@@ -19,7 +19,7 @@ enum KeychainError: Error {
 /// A helper class used to interact with Keychain storage access. Wraps all storage write operations with threadsafe locks.
 class Keychain: @unchecked Sendable {
 
-    static let `default`: Keychain = Keychain()
+    static var `default`: Keychain { Keychain() }
     private let lock = NSLock()
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
@@ -70,9 +70,9 @@ class Keychain: @unchecked Sendable {
         return try storage.set(data, for: key)
     }
 
-    /// Fetches a stored value from the keychain with the specified key and attempts to decode it from the implied generic.
+    /// Fetches a stored value from the keychain and decodes it as the requested type.
     /// - Parameter key: the keychain key
-    /// - Returns: the generic codeable for the specified key or nil if not found
+    /// - Returns: the decoded value, or nil when the key is not found; decoding failures are thrown.
     func get<T>(key: String) throws -> T? where T: Codable {
 
         lock.lock()
@@ -80,8 +80,7 @@ class Keychain: @unchecked Sendable {
 
         guard let storage else { return nil }
         guard let data = try storage.get(key: key) else { return nil }
-        let value = try? decoder.decode(T.self, from: data)
-        return value
+        return try decoder.decode(T.self, from: data)
     }
 
     /// Clears only this keychain's namespace.
