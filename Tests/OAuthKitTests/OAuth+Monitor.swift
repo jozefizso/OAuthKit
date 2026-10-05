@@ -6,7 +6,6 @@
 //
 
 import Foundation
-import Observation
 @testable import OAuthKit
 
 extension OAuth {
