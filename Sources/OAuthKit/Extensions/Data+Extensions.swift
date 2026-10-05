@@ -47,16 +47,10 @@ extension Data {
     /// - Returns: an array of cryptographically secure random bytes
     static func secureRandom(count: Int = 32) -> Data {
         var bytes = [UInt8](repeating: 0, count: count)
-        #if canImport(CryptoKit)
-        // Apple
-        _ = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
-        #else
-        // Android / Linux
         var generator = SystemRandomNumberGenerator()
-        for i in 0..<count {
-            bytes[i] = UInt8.random(in: 0...255, using: &generator)
+        for index in bytes.indices {
+            bytes[index] = UInt8.random(in: .min ... .max, using: &generator)
         }
-        #endif
         return Data(bytes: &bytes, count: bytes.count)
     }
 }

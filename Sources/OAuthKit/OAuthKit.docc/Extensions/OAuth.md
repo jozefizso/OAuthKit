@@ -18,12 +18,13 @@ var oauth: OAuth
 
 An OAuth object can also be highly customized when passed a dictionary  of  ``Option`` values into it's iniitializers.
 
+An OAuth object can also be customized by passing a dictionary of ``Option`` values to its initializer. The system browser session uses ephemeral cookies by default; persistence is an explicit opt-in.
+
 ```swift
 let options: [OAuth.Option: Any] = [
-    .applicationTag: "com.bundle.Idenfitier",
+    .applicationTag: "com.bundle.identifier",
     .autoRefresh: true,
-    .requireAuthenticationWithBiometricsOrCompanion: true,
-    .useNonPersistentWebDataStore: true
+    .persistBrowserSession: true
 ]
 let oauth: OAuth = .init(.module, options: options)
 ```

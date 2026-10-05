@@ -86,11 +86,13 @@ public final class OAuth: Sendable {
     @ObservationIgnored
     private var autoRefresh: Bool = false
 
-    /// Configuration option determining if the WKWebsiteDataStore used during authorization flows should use an ephemeral datastore.
-    /// Set to true if you wish to implement private browsing and force a new login attempt every time an authorization flow is started.
+    /// Explicit opt-in to persistent cookies in the system browser session.
     @ObservationIgnored
-    var useNonPersistentWebDataStore: Bool = false
+    var persistBrowserSession: Bool = false
 
+
+    @ObservationIgnored
+    private var pendingAuthorization: OAuthPendingAuthorization?
 
     /// The json decoder
     @ObservationIgnored
@@ -133,6 +135,10 @@ public final class OAuth: Sendable {
         configure(options)
     }
 }
+private struct OAuthPendingAuthorization {
+    let provider: OAuth.Provider
+    let pkce: OAuth.PKCE
+}
 
 public extension OAuth {
 
@@ -147,21 +153,23 @@ public extension OAuth {
     /// - Parameters:
     ///   - provider: the provider to begin authorization for
     ///   - grantType: the grant type to execute
-    func authorize(provider: Provider, grantType: GrantType = .pkce(.init())) {
+    func authorize(provider: Provider, grantType: GrantType = .authorizationCode) {
         switch grantType {
-        case .pkce:
+        case .authorizationCode:
             guard (provider.issuer == nil || isCanonicalIssuer(provider.issuer!)),
                   provider.issuer != nil || providers.allSatisfy({ candidate in
                       candidate.id == provider.id ||
-                      candidate.authorizationURL.absoluteString == provider.authorizationURL.absoluteString &&
-                          candidate.accessTokenURL.absoluteString == provider.accessTokenURL.absoluteString ||
+                      (candidate.authorizationURL.absoluteString == provider.authorizationURL.absoluteString &&
+                       candidate.accessTokenURL.absoluteString == provider.accessTokenURL.absoluteString) ||
                       candidate.redirectURI != provider.redirectURI
                   }) else {
                 state = .error(provider, .malformedURL)
                 return
             }
             supersedeTasks()
-            state = .authorizing(provider, .pkce(.init()))
+            let pkce = PKCE()
+            pendingAuthorization = OAuthPendingAuthorization(provider: provider, pkce: pkce)
+            state = .authorizing(provider, .authorizationCode)
         case .deviceCode:
             supersedeTasks()
             state = .requestingDeviceCode(provider)
@@ -182,35 +190,52 @@ public extension OAuth {
             }
         }
     }
+
+    internal var activeAuthorizationURL: URL? {
+        guard let pendingAuthorization else { return nil }
+        return Request.auth(provider: pendingAuthorization.provider, pkce: pendingAuthorization.pkce)?.url
+    }
+
+    internal func cancelAuthorization() {
+        guard pendingAuthorization != nil else { return }
+        pendingAuthorization = nil
+        supersedeTasks()
+        state = .empty
+    }
     /// Validates and consumes the active authorization callback before exchanging its code.
     @discardableResult
     func handleAuthorizationCallback(_ url: URL) -> Bool {
-        guard case .authorizing(let provider, let grantType) = state,
-              case .pkce(let pkce) = grantType,
-              let redirectURI = provider.redirectURI,
+        guard let transaction = pendingAuthorization,
+              let redirectURI = transaction.provider.redirectURI,
               let redirect = URLComponents(string: redirectURI),
               let callback = URLComponents(url: url, resolvingAgainstBaseURL: false),
               callback.scheme == redirect.scheme,
               callback.host == redirect.host,
               callback.port == redirect.port,
-              callback.user == redirect.user,
-              callback.password == redirect.password,
-              callback.path == redirect.path,
-              callback.fragment == redirect.fragment,
-              let callbackItems = callback.queryItems,
-              let redirectItems = redirect.queryItems else { return false }
+              callback.percentEncodedPath == redirect.percentEncodedPath,
+              callback.user == nil,
+              callback.password == nil,
+              callback.fragment == nil,
+              redirect.user == nil,
+              redirect.password == nil,
+              redirect.fragment == nil,
+              let callbackItems = formQueryItems(callback.percentEncodedQuery),
+              let redirectItems = formQueryItems(redirect.percentEncodedQuery) else { return false }
+        let provider = transaction.provider
+        let pkce = transaction.pkce
         let stateItems = callbackItems.filter { $0.name == "state" }
         let codeItems = callbackItems.filter { $0.name == "code" }
+        let errorItems = callbackItems.filter { $0.name == "error" }
         let issuerItems = callbackItems.filter { $0.name == "iss" }
-        guard stateItems.count == 1,
-              codeItems.count == 1,
+        let names = callbackItems.map(\.name)
+        guard Set(names).count == names.count,
+              stateItems.count == 1,
               stateItems[0].value == pkce.state,
-              let code = codeItems[0].value,
+              codeItems.count + errorItems.count == 1,
               issuerItems.count <= 1 else { return false }
         if let issuer = provider.issuer {
             guard isCanonicalIssuer(issuer), issuerItems.count == 1, issuerItems[0].value == issuer else { return false }
-        } else if let receivedIssuer = issuerItems.first?.value,
-                  providers.contains(where: { $0.issuer != nil && $0.issuer != receivedIssuer }) {
+        } else if !issuerItems.isEmpty {
             return false
         }
         for item in redirectItems {
@@ -218,12 +243,31 @@ public extension OAuth {
             guard matches.count == 1, matches[0].value == item.value else { return false }
         }
         let staticNames = Set(redirectItems.map(\.name))
-        guard callbackItems.allSatisfy({ staticNames.contains($0.name) || ["state", "code", "iss"].contains($0.name) }) else { return false }
-        state = .empty
-        token(provider: provider, code: code, pkce: pkce)
+        let responseNames: Set<String> = ["state", "code", "iss", "error", "error_description", "error_uri"]
+        guard callbackItems.allSatisfy({ staticNames.contains($0.name) || responseNames.contains($0.name) }) else { return false }
+        supersedeTasks()
+        pendingAuthorization = nil
+        if errorItems.isEmpty, let code = codeItems.first?.value {
+            requestToken(provider: provider, code: code, pkce: pkce)
+        } else {
+            state = .error(provider, .badResponse)
+        }
         return true
     }
 
+    private func formQueryItems(_ rawQuery: String?) -> [URLQueryItem]? {
+        guard let rawQuery else { return [] }
+        var items = [URLQueryItem]()
+        for pair in rawQuery.split(separator: "&", omittingEmptySubsequences: false) {
+            let parts = pair.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+            let rawName = String(parts[0]).replacingOccurrences(of: "+", with: " ")
+            let rawValue = parts.count == 2 ? String(parts[1]).replacingOccurrences(of: "+", with: " ") : ""
+            guard let name = rawName.removingPercentEncoding,
+                  let value = rawValue.removingPercentEncoding else { return nil }
+            items.append(URLQueryItem(name: name, value: value))
+        }
+        return items
+    }
     private func isCanonicalIssuer(_ issuer: String) -> Bool {
         guard let components = URLComponents(string: issuer),
               components.scheme == "https",
@@ -241,7 +285,7 @@ public extension OAuth {
     ///   - provider: the provider the access token is being requested from
     ///   - code: the code to exchange
     ///   - pkce: the pkce data
-    func token(provider: Provider, code: String, pkce: PKCE? = nil) {
+    internal func token(provider: Provider, code: String, pkce: PKCE? = nil) {
         task { [self] in
             await requestToken(provider: provider, code: code, pkce: pkce)
         }
@@ -310,9 +354,8 @@ private extension OAuth {
                 self.autoRefresh = autoRefresh
             }
 
-            // Ephemeral web data store
-            if let useNonPersistentWebDataStore = options[.useNonPersistentWebDataStore] as? Bool {
-                self.useNonPersistentWebDataStore = useNonPersistentWebDataStore
+            if let persistBrowserSession = options[.persistBrowserSession] as? Bool {
+                self.persistBrowserSession = persistBrowserSession
             }
 
 

@@ -52,15 +52,15 @@ let urlSession: URLSession = .init(configuration: configuration)
 let options: [OAuth.Option: Any] = [.urlSession: urlSession]
 ```
 
-### Private Browsing
-The ``OAuth/Option/useNonPersistentWebDataStore`` option allows developers to implement private browsing inside the ``OAWebView``. Setting this value to true forces the ``OAWebView`` to use a non-persistent data store, preventing data from being written to the file system.
+### System Browser Session
+Interactive credential entry uses ``ASWebAuthenticationSession`` and never an embedded web view. Browser cookies are ephemeral by default; set ``OAuth/Option/persistBrowserSession`` to `true` only when the application explicitly requests persistence. Device-verification URLs are opened by the platform in the external user agent.
 
-```swift
-let options: [OAuth.Option: Any] = [
-    .useNonPersistentWebDataStore: true,
-]
-let oauth: OAuth = .init(.module, options: options)
-```
+#### Arrange / Act / Assert: trusted browser and cancellation lifecycle
+**Arrange:** Start an authorization for a provider with a registered callback URI while capturing the platform's authentication-session launch.
+
+**Act:** Confirm the system authentication surface opens at the provider authorization URL, cancel it through the system UI, and separately dismiss the containing OAuth view while a session is active.
+
+**Assert:** Credentials are entered only in the trusted system surface; cancellation and view dismissal cancel the session and discard pending state. The session requests ephemeral cookies by default and requests persistence only when ``OAuth/Option/persistBrowserSession`` is explicitly true.
 
 ### Keychain Protection
 The ``OAuth/Option/requireBiometricAuthentication`` option protects each stored token item using the Keychain's biometric-current-set access-control policy. The system requires biometric authentication on each protected read, including token refreshes and reads by other OAuth instances; an initializer-only authentication check does not unlock items. Authentication cancellation, missing contexts, and unsupported biometrics fail closed. Existing items without Keychain access control are rejected while biometric protection is enabled. Items are bound to the currently enrolled biometric set and become unavailable if that set changes. Supply an ``OAuth/Option/localAuthentication`` context to control the system authentication prompt. On macOS, OAuthKit selects the data-protection Keychain for all operations; the host executable's entitlements and user-session context determine availability.

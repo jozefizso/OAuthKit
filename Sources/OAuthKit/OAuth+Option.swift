@@ -40,10 +40,9 @@ public extension OAuth.Option {
 
     /// A key used for providing a custom url session.
     static let urlSession: OAuth.Option = .init(rawValue: "urlSession")
+    /// A key used to opt in to persistent account cookies in the system external browser session.
+    /// System sessions are ephemeral by default.
+    static let persistBrowserSession: OAuth.Option = .init(rawValue: "persistBrowserSession")
 
-    /// A key used for setting the WKWebsiteDataStore to `nonPersistent()` in the OAWebView.
-    /// This is disabled by default, but this can be turned on to allow developers to use an ephemeral webkit datastore
-    /// that effectively implements private browsing and forces a new login attempt every time an authorization flow is started.
-    static let useNonPersistentWebDataStore: OAuth.Option = .init(rawValue: "useNonPersistentWebDataStore")
 }
 

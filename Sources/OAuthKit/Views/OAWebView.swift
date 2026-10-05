@@ -5,64 +5,93 @@
 //  Created by Kevin McKee
 //
 
-#if canImport(WebKit)
+#if canImport(AuthenticationServices) && canImport(SwiftUI) && (os(iOS) || os(macOS) || os(visionOS))
+import AuthenticationServices
 import SwiftUI
-import WebKit
+#if os(macOS)
+import AppKit
+#else
+import UIKit
+#endif
 
-/// A UIViewRepresentable / NSViewRepresentable wrapper type that coordinates
-/// oauth authorization flows inside a `WKWebView`.
+/// Presents OAuth authorization in the operating system's trusted external user agent.
 @MainActor
-public struct OAWebView {
-
+public struct OAWebView: View {
     let oauth: OAuth
-    let view: WKWebView
+    @State private var session: ASWebAuthenticationSession?
+    @Environment(\.openURL) private var openURL
 
-    /// Initializer with the speciifed oauth object.
-    /// - Parameter oauth: the oauth object to use
     public init(oauth: OAuth) {
         self.oauth = oauth
-        let configuration = WKWebViewConfiguration()
-        configuration.websiteDataStore = oauth.useNonPersistentWebDataStore ? WKWebsiteDataStore.nonPersistent() : WKWebsiteDataStore.default()
-        self.view = WKWebView(frame: .zero, configuration: configuration)
     }
 
-    public func makeWebView(context: Context) -> WKWebView {
-        view.navigationDelegate = context.coordinator
-        view.allowsLinkPreview = true
-        return view
+    public var body: some View {
+        Color.clear
+            .onChange(of: oauth.state, initial: true) { _, state in
+                switch state {
+                case .authorizing(let provider, _):
+                    start(provider: provider)
+                case .receivedDeviceCode(_, let code):
+                    if let url = URL(string: code.verificationUri) {
+                        openURL(url)
+                    }
+                default:
+                    session?.cancel()
+                    session = nil
+                }
+            }
+            .onDisappear {
+                if session != nil {
+                    session?.cancel()
+                    session = nil
+                    oauth.cancelAuthorization()
+                }
+            }
     }
+    private func start(provider: OAuth.Provider) {
+        guard session == nil,
+              let redirect = provider.redirectURI,
+              let callbackScheme = URLComponents(string: redirect)?.scheme,
+              let authorizationURL = oauth.activeAuthorizationURL else {
+            oauth.cancelAuthorization()
+            return
+        }
+        let authSession = ASWebAuthenticationSession(url: authorizationURL, callbackURLScheme: callbackScheme) { [weak oauth] callback, error in
+            Task { @MainActor in
+                guard let oauth else { return }
+                if let callback {
+                    _ = oauth.handleAuthorizationCallback(callback)
+                } else if error != nil {
+                    oauth.cancelAuthorization()
+                }
+            }
+        }
+        authSession.presentationContextProvider = AuthenticationPresentationAnchor.shared
+        authSession.prefersEphemeralWebBrowserSession = !oauth.persistBrowserSession
+        session = authSession
+        guard authSession.start() else {
+            session = nil
+            oauth.cancelAuthorization()
+            return
+        }
+    }
+}
 
-    public func makeCoordinator() -> OAWebViewCoordinator {
-        OAWebViewCoordinator(self)
+@MainActor
+private final class AuthenticationPresentationAnchor: NSObject, ASWebAuthenticationPresentationContextProviding {
+    static let shared = AuthenticationPresentationAnchor()
+
+    func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
+        #if os(macOS)
+        NSApplication.shared.keyWindow ?? NSWindow()
+        #else
+        UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .flatMap(\.windows)
+            .first(where: \.isKeyWindow) ?? UIWindow()
+        #endif
     }
 }
 #endif
 
 
-#if os(iOS) || os(visionOS)
-
-extension OAWebView: UIViewRepresentable {
-
-    public func makeUIView(context: Context) -> WKWebView {
-        makeWebView(context: context)
-    }
-
-    public func updateUIView(_ uiView: WKWebView, context: Context) {
-        context.coordinator.update(state: oauth.state)
-    }
-}
-
-#elseif os(macOS)
-
-extension OAWebView: NSViewRepresentable {
-
-    public func makeNSView(context: Context) -> some NSView {
-        makeWebView(context: context)
-    }
-
-    public func updateNSView(_ nsView: NSViewType, context: Context) {
-        context.coordinator.update(state: oauth.state)
-    }
-}
-
-#endif

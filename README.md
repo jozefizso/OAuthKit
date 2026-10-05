@@ -65,7 +65,7 @@ struct OAuthApp: App {
             ContentView()
         }
         
-        #if canImport(WebKit)
+        #if canImport(AuthenticationServices)
         WindowGroup(id: "oauth") {
             OAWebView(oauth: oauth)
         }
@@ -78,7 +78,7 @@ struct ContentView: View {
     @Environment(\.oauth)
     var oauth: OAuth
 
-    #if canImport(WebKit)
+    #if canImport(AuthenticationServices)
     @Environment(\.openWindow)
     var openWindow
     
@@ -136,22 +136,17 @@ struct ContentView: View {
     /// Starts the authorization process for the specified provider.
     /// - Parameter provider: the provider to begin authorization for
     private func authorize(provider: OAuth.Provider) {
-        #if canImport(WebKit)
-        // Use the PKCE grantType for iOS, macOS, visionOS
-        let grantType: OAuth.GrantType = .pkce(.init())
+        #if canImport(AuthenticationServices)
+        oauth.authorize(provider: provider)
         #else
-        // Use the Device Code grantType for tvOS, watchOS
-        let grantType: OAuth.GrantType = .deviceCode
+        oauth.authorize(provider: provider, grantType: .deviceCode)
         #endif
-
-        // Start the authorization flow
-        oauth.authorize(provider: provider, grantType: grantType)
     }
     
     /// Reacts to oauth state changes by opening or closing authorization windows.
     /// - Parameter state: the published state change
     private func handle(state: OAuth.State) {
-        #if canImport(WebKit)
+        #if canImport(AuthenticationServices)
         switch state {
         case .empty, .error, .requestingAccessToken, .requestingDeviceCode:
             break
@@ -189,8 +184,7 @@ makes an embedded client secret confidential.
 let providers: [OAuth.Provider] = ...
 let options: [OAuth.Option: Any] = [
     .applicationTag: "com.bundle.identifier",
-    .autoRefresh: true,
-    .useNonPersistentWebDataStore: true
+    .autoRefresh: true
 ]
 let oauth: OAuth = .init(providers: providers, options: options)
 ```
@@ -216,7 +210,7 @@ let options: [OAuth.Option: Any] = [.urlSession: urlSession]
 let oauth: OAuth = .init(.main, options: options)
 ```
 
-### OAuth initialized with Keychain protection and Private Browsing
+### OAuth initialized with Keychain protection and browser-session privacy
 Set `.requireBiometricAuthentication: true` to protect each stored token with
 Keychain `.biometryCurrentSet` access control. The OS enforces authentication on
 every protected read, including restoration and refresh; cancelling or denying
@@ -231,7 +225,7 @@ biometric option cannot silently restore protected items or downgrade their
 protection on replacement. Such reads fail without displaying an authentication
 prompt; enable the option explicitly to authenticate.
 
-Developers can also implement private browsing by setting the **.useNonPersistentWebDataStore** option to true. This forces the [WKWebView](https://developer.apple.com/documentation/webkit/wkwebview) used during authorization flows to use a non-persistent data store, preventing data from being written to the file system.
+OAuthKit uses an ephemeral system browser session by default. To explicitly retain account cookies across sessions, set `.persistBrowserSession: true`. Credential-entry authorization always uses the platform's trusted external user agent; OAuthKit does not embed an authorization web view.
 ### Authorization-server mix-up protection
 Set `issuer` to the authorization server's exact RFC 9207 issuer string when the server returns `iss` in authorization responses. The configured value must be an HTTPS issuer without query or fragment. OAuthKit binds the provider and token endpoint to the pending transaction, requires the callback issuer, and compares it exactly. When the issuer parameter is unavailable, authorization servers configured together must use distinct redirect URIs.
 
@@ -251,7 +245,7 @@ localAuthentication.localizedReason = "read tokens from keychain"
 let options: [OAuth.Option: Any] = [
     .localAuthentication: localAuthentication,
     .requireBiometricAuthentication: true,
-    .useNonPersistentWebDataStore: true,
+    .persistBrowserSession: true
 ]
 let oauth: OAuth = .init(.main, options: options)
 ```
@@ -272,25 +266,11 @@ signs, and Unicode bytes are escaped. This preserves provider-issued codes and
 credentials without letting their contents become additional form parameters.
 
 
-### OAuth 2.0 Authorization Code Flow
-OAuthKit uses S256 PKCE for every interactive authorization-code flow and generates fresh unpredictable state and verifier values when `authorize(provider:)` starts. Callers cannot provide state or disable PKCE.
+### OAuth 2.0 Authorization Code with PKCE
+Every interactive authorization uses S256 PKCE with fresh, internal state and verifier values; callers cannot supply predictable state or disable PKCE.
 
 ```swift
 oauth.authorize(provider: provider)
-```
-
-### OAuth 2.0 PKCE Flow
-PKCE ([RFC 7636](https://www.rfc-editor.org/rfc/rfc7636)) is an extension to the [Authorization Code](https://oauth.net/2/grant-types/authorization-code/) flow to prevent CSRF and authorization code injection attacks.
-
-Proof Key for Code Exchange ([PKCE](https://oauth.net/2/pkce/)) is the default and recommended flow to use in OAuthKit as this technique involves the client first creating a secret on each authorization request, and then using that secret again when exchanging the authorization code for an access token. This way if the code is intercepted, it will not be useful since the token request relies on the initial secret.
-
-```swift
-// PKCE is the default workflow with an auto generated pkce object
-oauth.authorize(provider: provider)
-
-// Or you can specify the workflow to use PKCE and inject your own values
-let grantType: OAuth.GrantType = .pkce(.init())
-oauth.authorize(provider: provider, grantType: grantType)
 ```
 
 ### OAuth 2.0 Device Code Flow

@@ -38,11 +38,9 @@ final class OAuthTests {
 
         let options: [OAuth.Option: Any] = [
             .applicationTag: tag, .autoRefresh: true,
-            .useNonPersistentWebDataStore: true,
             .urlSession: Self.urlSession,
         ]
         oauth = .init(.module, options: options)
-        #expect(oauth.useNonPersistentWebDataStore == true)
         #expect(oauth.urlSession == Self.urlSession)
     }
 
@@ -64,7 +62,6 @@ final class OAuthTests {
         ]
         let customOAuth: OAuth = .init(providers: providers, options: options)
         #expect(customOAuth.providers.count == 1)
-        #expect(customOAuth.useNonPersistentWebDataStore == false)
         #expect(customOAuth.urlSession == Self.urlSession)
     }
 
@@ -80,7 +77,6 @@ final class OAuthTests {
         let options: [OAuth.Option: Any] = [
             .applicationTag: tag,
             .autoRefresh: false,
-            .useNonPersistentWebDataStore: true,
             .urlSession: Self.urlSession
         ]
         let restoredOAuth: OAuth = .init(.module, options: options)
@@ -103,8 +99,7 @@ final class OAuthTests {
     @Test("Building Authorization Request")
     func whenBuildingAuthorizationRequest() async throws {
         let pkce = OAuth.PKCE()
-        let grantType: OAuth.GrantType = .pkce(pkce)
-        let request = OAuth.Request.auth(provider: provider, grantType: grantType)
+        let request = OAuth.Request.auth(provider: provider, pkce: pkce)
         #expect(request != nil)
         #expect(request!.url!.absoluteString.contains("client_id=\(provider.clientID)"))
         #expect(request!.url!.absoluteString.contains("redirect_uri=\(provider.redirectURI!)"))
@@ -299,7 +294,6 @@ final class OAuthTests {
         let options: [OAuth.Option: Any] = [
             .applicationTag: tag,
             .autoRefresh: true,
-            .useNonPersistentWebDataStore: true,
             .urlSession: Self.urlSession
         ]
         let restoredOAuth: OAuth = .init(.module, options: options)
@@ -319,7 +313,6 @@ final class OAuthTests {
         let options: [OAuth.Option: Any] = [
             .applicationTag: applicationTag,
             .autoRefresh: true,
-            .useNonPersistentWebDataStore: true,
             .urlSession: urlSession,
         ]
 
@@ -360,7 +353,6 @@ final class OAuthTests {
         let options: [OAuth.Option: Any] = [
             .applicationTag: applicationTag,
             .autoRefresh: true,
-            .useNonPersistentWebDataStore: true,
             .urlSession: urlSession,
         ]
 
@@ -394,16 +386,15 @@ final class OAuthTests {
     /// Tests the PKCE request parameters.
     @Test("Building PKCE Request")
     func whenBuildingPKCERequest() async throws {
-        let pkce: OAuth.PKCE = .init()
-        let grantType: OAuth.GrantType = .pkce(pkce)
-        let request = OAuth.Request.auth(provider: provider, grantType: grantType)
+        let pkce = OAuth.PKCE()
+        let request = OAuth.Request.auth(provider: provider, pkce: pkce)
         #expect(request != nil)
         #expect(request!.url!.absoluteString.contains("client_id="))
         #expect(request!.url!.absoluteString.contains("redirect_uri=\(provider.redirectURI!)"))
         #expect(request!.url!.absoluteString.contains("response_type=code"))
         #expect(request!.url!.absoluteString.contains("state=\(pkce.state)"))
         #expect(request!.url!.absoluteString.contains("code_challenge=\(pkce.codeChallenge)"))
-        #expect(request!.url!.absoluteString.contains("code_challenge_method=\(pkce.codeChallengeMethod)"))
+        #expect(request!.url!.absoluteString.contains("code_challenge_method=S256"))
     }
 
     /// Tests OAuth Secure Random State Generation
@@ -659,14 +650,12 @@ final class OAuthTests {
     /// Tests to make sure the grant type raw values are frozen and haven't been changed during development.
     @Test("Grant Type Raw Value Checking")
     func whenCheckingGrantType() async throws {
-        var grantType: OAuth.GrantType = .pkce(.init())
-        #expect(grantType.rawValue == "pkce")
+        var grantType: OAuth.GrantType = .authorizationCode
+        #expect(grantType.rawValue == "authorization_code")
         grantType = .clientCredentials
         #expect(grantType.rawValue == "client_credentials")
         grantType = .deviceCode
         #expect(grantType.rawValue == "device_code")
-        grantType = .pkce(.init())
-        #expect(grantType.rawValue == "pkce")
         grantType = .refreshToken
         #expect(grantType.rawValue == "refresh_token")
     }
@@ -692,25 +681,68 @@ final class OAuthTests {
     /// Tests OAuth State changes
     @Test("OAuth State Changes")
     func whenOAuthState() async throws {
+        oauth.providers = [provider]
         oauth.authorize(provider: provider)
-        guard case .authorizing(let activeProvider, let activeGrant) = oauth.state,
-              case .pkce(let firstPKCE) = activeGrant else {
-            Issue.record("Expected an S256 PKCE authorization transaction")
-            return
-        }
-        #expect(activeProvider == provider)
+        #expect(oauth.state == .authorizing(provider, .authorizationCode))
+        let firstState = URLComponents(url: oauth.activeAuthorizationURL!, resolvingAgainstBaseURL: false)!
+            .queryItems!.first(where: { $0.name == "state" })?.value
+        let firstChallenge = URLComponents(url: oauth.activeAuthorizationURL!, resolvingAgainstBaseURL: false)!
+            .queryItems!.first(where: { $0.name == "code_challenge" })?.value
         oauth.authorize(provider: provider)
-        guard case .authorizing(_, let nextGrant) = oauth.state,
-              case .pkce(let secondPKCE) = nextGrant else {
-            Issue.record("Expected a second S256 PKCE transaction")
-            return
-        }
-        #expect(firstPKCE.state != secondPKCE.state)
-        #expect(firstPKCE.codeVerifier != secondPKCE.codeVerifier)
-
-        // Empty
-        try oauth.clear()
+        let secondState = URLComponents(url: oauth.activeAuthorizationURL!, resolvingAgainstBaseURL: false)!
+            .queryItems!.first(where: { $0.name == "state" })?.value
+        let secondChallenge = URLComponents(url: oauth.activeAuthorizationURL!, resolvingAgainstBaseURL: false)!
+            .queryItems!.first(where: { $0.name == "code_challenge" })?.value
+        #expect(firstState != secondState)
+        #expect(firstChallenge != secondChallenge)
+        oauth.clear()
         #expect(oauth.state == .empty)
+    }
+
+    /// Tests the single-use callback transaction against issuer and redirect mix-up inputs.
+    @Test("Authorization Callback Binding and Single Use")
+    func whenBindingAuthorizationCallbacks() async throws {
+        let testProvider = OAuth.Provider(
+            authorizationURL: URL(string: "https://auth.example/authorize")!,
+            accessTokenURL: URL(string: "https://auth.example/token")!,
+            issuer: "https://auth.example/issuer+v1",
+            clientID: "client",
+            clientSecret: nil,
+            redirectURI: "myapp://callback?tenant=one"
+        )
+        oauth.providers = [testProvider]
+        oauth.authorize(provider: testProvider)
+        let authorizationItems = URLComponents(url: oauth.activeAuthorizationURL!, resolvingAgainstBaseURL: false)!.queryItems!
+        let state = authorizationItems.first(where: { $0.name == "state" })!.value!
+        let makeCallback: ([URLQueryItem], String) -> URL = { items, host in
+            var components = URLComponents()
+            components.scheme = "myapp"
+            components.host = host.isEmpty ? "callback" : host
+            components.queryItems = items
+            return components.url!
+        }
+        let validItems = [
+            URLQueryItem(name: "tenant", value: "one"),
+            URLQueryItem(name: "code", value: "test-code"),
+            URLQueryItem(name: "state", value: state),
+            URLQueryItem(name: "iss", value: "https://auth.example/issuer+v1")
+        ]
+        #expect(!oauth.handleAuthorizationCallback(makeCallback(validItems.filter { $0.name != "iss" }, "")))
+        #expect(!oauth.handleAuthorizationCallback(makeCallback(validItems.map {
+            $0.name == "iss" ? URLQueryItem(name: "iss", value: "https://AUTH.example/issuer+v1") : $0
+        }, "")))
+        #expect(!oauth.handleAuthorizationCallback(makeCallback(validItems + [URLQueryItem(name: "iss", value: "https://auth.example/issuer+v1")], "")))
+        #expect(!oauth.handleAuthorizationCallback(makeCallback(validItems, "callback.attacker")))
+        #expect(!oauth.handleAuthorizationCallback(makeCallback(validItems.map {
+            $0.name == "tenant" ? URLQueryItem(name: "tenant", value: "two") : $0
+        }, "")))
+        #expect(!oauth.handleAuthorizationCallback(makeCallback(validItems + [URLQueryItem(name: "tenant", value: "one")], "")))
+        #expect(!oauth.handleAuthorizationCallback(makeCallback(validItems + [URLQueryItem(name: "state", value: state)], "")))
+        #expect(!oauth.handleAuthorizationCallback(makeCallback(validItems + [URLQueryItem(name: "code", value: "duplicate")], "")))
+        let callback = makeCallback(validItems, "")
+        #expect(oauth.handleAuthorizationCallback(callback))
+        #expect(!oauth.handleAuthorizationCallback(callback))
+        #expect(await waitForAuthorization(oauth))
     }
 
     /// Tests OAuth Secure Random State Generation

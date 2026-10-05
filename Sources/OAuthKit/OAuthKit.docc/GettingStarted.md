@@ -18,15 +18,11 @@ Learn how to create an observable OAuth instance and start an authorization flow
 
 ## Overview
 
-OAuth 2.0 authorization flows are started by calling ``OAuth/authorize(provider:grantType:)`` with an ``OAuth/Provider`` and ``OAuth/GrantType``.
+OAuth 2.0 authorization flows are started by calling ``OAuth/authorize(provider:grantType:)`` with an ``OAuth/Provider`` and ``OAuth/GrantType``. Interactive authorization always uses internally generated state and S256 PKCE.
 
 ```swift
-// Create an observable OAuth object
 let oauth: OAuth = .init(.main)
-
-// Start an authorization flow
-let grantType: OAuth.GrantType = .pkce(.init())
-oauth.authorize(provider: provider, grantType: grantType)
+oauth.authorize(provider: provider)
 ```
 
 ## Observing OAuth State
@@ -47,7 +43,7 @@ struct OAuthApp: App {
             ContentView()
         }
         
-        #if canImport(WebKit)
+#if canImport(AuthenticationServices)
         WindowGroup(id: "oauth") {
             OAWebView(oauth: oauth)
         }
@@ -112,14 +108,13 @@ struct ContentView: View {
     /// Starts the authorization process for the specified provider.
     /// - Parameter provider: the provider to begin authorization for
     private func authorize(provider: OAuth.Provider) {
-        let grantType: OAuth.GrantType = .pkce(.init())
-        oauth.authorize(provider: provider, grantType: grantType)
+        oauth.authorize(provider: provider)
     }
     
     /// Reacts to oauth state changes by opening or closing authorization windows.
     /// - Parameter state: the published state change
     private func handle(state: OAuth.State) {
-        #if canImport(WebKit)
+#if canImport(AuthenticationServices)
         switch state {
         case .empty, .error, .requestingAccessToken, .requestingDeviceCode:
             break

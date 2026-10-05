@@ -42,17 +42,13 @@ extension OAuth {
 
         // MARK: URLRequest Builders
 
-        /// Builds an `/authorization` request for the specified provider and grant type.
-        /// - Parameters:
-        ///   - provider: the oauth provider
-        ///   - grantType: the grant type
-        /// - Returns: an `/authorization` url request
-        static func auth(provider: Provider, grantType: GrantType) -> URLRequest? {
+        /// Builds an `/authorization` request using a transaction's generated PKCE data.
+        static func auth(provider: Provider, pkce: PKCE) -> URLRequest? {
             guard provider.authorizationURL.scheme?.lowercased() == "https",
                   provider.redirectURI.map(isAllowedRedirectURI) ?? true,
                   var urlComponents = URLComponents(string: provider.authorizationURL.absoluteString),
-                  !hasOAuthReservedQueryParameters(provider.authorizationURL) else { return nil }
-            guard let queryItems = buildQueryItems(provider: provider, grantType: grantType) else { return nil }
+                  !hasOAuthReservedQueryParameters(provider.authorizationURL),
+                  let queryItems = buildQueryItems(provider: provider, grantType: .authorizationCode, pkce: pkce) else { return nil }
             urlComponents.queryItems = (urlComponents.queryItems ?? []) + queryItems
             guard let url = urlComponents.url else { return nil }
             return URLRequest(url: url)
@@ -111,16 +107,17 @@ extension OAuth {
 
         // MARK: Query Items
 
-        /// Builds default URL query items for the specified provider and grant type.
-        /// Authorization requests always use PKCE with S256.
+        /// Builds default URL query items. Authorization-code requests always include S256 PKCE.
         /// - Parameters:
         ///   - provider: the oauth provider
         ///   - grantType: the grant type
+        ///   - pkce: the generated PKCE transaction data
         /// - Returns: the default url query items
-        private static func buildQueryItems(provider: Provider, grantType: GrantType) -> [URLQueryItem]? {
+        private static func buildQueryItems(provider: Provider, grantType: GrantType, pkce: PKCE? = nil) -> [URLQueryItem]? {
             var queryItems = [URLQueryItem]()
             switch grantType {
-            case .pkce(let pkce):
+            case .authorizationCode:
+                guard let pkce else { return nil }
                 queryItems.append(URLQueryItem(key: .clientID, value: provider.clientID))
                 queryItems.append(URLQueryItem(key: .redirectUri, value: provider.redirectURI))
                 queryItems.append(URLQueryItem(key: .responseType, value: responseTypeCode))
@@ -165,7 +162,7 @@ extension OAuth {
         ///   - pkce: the pkce data
         /// - Returns: the `/token` url query items
         private static func buildQueryItems(provider: Provider, code: String, pkce: PKCE? = nil) -> [URLQueryItem] {
-            let grantType: GrantType = .pkce(.init())
+            let grantType: GrantType = .authorizationCode
             var queryItems: [URLQueryItem] = [
                 URLQueryItem(key: .clientID, value: provider.clientID),
                 URLQueryItem(key: .clientSecret, value: provider.clientSecret),

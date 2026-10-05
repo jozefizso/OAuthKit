@@ -21,15 +21,11 @@ struct ContentView: View {
     /// Starts the authorization process for the specified provider.
     /// - Parameter provider: the provider to begin authorization for
     private func authorize(provider: OAuth.Provider) {
-        #if canImport(WebKit)
-        // Use the PKCE grantType for iOS, macOS, visionOS
-        let grantType: OAuth.GrantType = .pkce(.init())
+        #if canImport(AuthenticationServices)
+        oauth.authorize(provider: provider)
         #else
-        // Use the Device Code grantType for tvOS, watchOS
-        let grantType: OAuth.GrantType = .deviceCode
+        oauth.authorize(provider: provider, grantType: .deviceCode)
         #endif
-        // Start the authorization flow
-        oauth.authorize(provider: provider, grantType: grantType)
     }
 
     /// The main view body

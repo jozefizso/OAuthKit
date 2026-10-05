@@ -5,6 +5,4 @@
     @Available(visionOS, introduced: "2.0")
 }
 
-> Important: The ``OAWebView`` is only available for Apple operating systems with browsers. If you want to start
-an ``OAuth/authorize(provider:grantType:)`` flow on tvOS or watchOS, be sure to use the 
-``OAuth/GrantType/deviceCode`` grant Type. See <doc:GettingStarted> for more details.
+`OAWebView` presents interactive authorization with the platform's trusted `ASWebAuthenticationSession`. Credentials are never entered in an embedded web view; the system surface displays the authorization-server origin. Browser cookies are ephemeral by default unless ``OAuth/Option/persistBrowserSession`` is enabled.
