@@ -100,7 +100,7 @@ final class OAuthTests {
         ]
         let restoredOAuth: OAuth = .init(.module, options: options)
         #expect(restoredOAuth.state == .authorized(provider, auth))
-        keychain.clear()
+        try keychain.clear()
     }
 
     /// Tests the custom date extension operator.

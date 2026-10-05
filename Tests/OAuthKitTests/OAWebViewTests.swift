@@ -146,7 +146,11 @@ final class OAWebViewTests {
             case .empty, .error, .authorizing, .requestingAccessToken, .requestingDeviceCode, .receivedDeviceCode:
                 break
             case .authorized(_, _):
-                keychain.clear()
+                do { try keychain.clear() }
+                catch {
+                    Issue.record("Failed to clear stored authorization: \(error)")
+                    return false
+                }
                 return true
             }
         }

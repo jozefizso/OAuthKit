@@ -14,7 +14,7 @@ final class KeychainTests {
     let keychain: Keychain
 
     deinit {
-        try? keychain.clear()
+        _ = try? keychain.clear()
     }
 
     /// Initializer.
@@ -49,14 +49,14 @@ final class KeychainTests {
     @Test("Clearing an exact service does not clear an overlapping service")
     func clearingOverlappingNamespace() throws {
         // Arrange
-        let base = "oauthkit.test.\(.secureRandom())"
+        let base = "oauthkit.test.\(String.secureRandom())"
         let first: Keychain = .init(base)
         let overlapping: Keychain = .init(base + ".child")
         try first.set("first", for: "token")
         try overlapping.set("child", for: "token")
         defer {
-            try? first.clear()
-            try? overlapping.clear()
+            _ = try? first.clear()
+            _ = try? overlapping.clear()
         }
 
         // Act
