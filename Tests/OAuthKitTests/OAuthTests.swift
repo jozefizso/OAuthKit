@@ -230,7 +230,7 @@ final class OAuthTests {
             .autoRefresh: false,
             .urlSession: urlSession,
         ])
-        let original = OAuth.Token(accessToken: "access-old", refreshToken: "refresh-old", expiresIn: 3600, scope: "old-scope", type: "Bearer", openIDToken: "id-old")
+        let original = OAuth.Token(accessToken: "access-old", refreshToken: "refresh-old", expiresIn: 3600, scope: "old-scope", type: "Bearer", rawIDToken: "id-old")
         let authorization = OAuth.Authorization(issuer: provider.id, token: original)
         let inserted = try oauth.keychain.set(authorization, for: provider.id)
         try #require(inserted)
@@ -239,7 +239,7 @@ final class OAuthTests {
         await oauth.refreshToken(provider: provider)
 
         // Assert
-        let expected = OAuth.Token(accessToken: "access-new", refreshToken: "refresh-old", expiresIn: 1800, scope: "new-scope", type: "Bearer", openIDToken: "id-new")
+        let expected = OAuth.Token(accessToken: "access-new", refreshToken: "refresh-old", expiresIn: 1800, scope: "new-scope", type: "Bearer", rawIDToken: "id-new")
         guard case .authorized(let selectedProvider, let current) = oauth.state else {
             Issue.record("Refresh did not publish authorization")
             return
@@ -272,7 +272,7 @@ final class OAuthTests {
         await oauth.refreshToken(provider: provider)
 
         // Assert
-        let expected = OAuth.Token(accessToken: "access-new", refreshToken: "refresh-new", expiresIn: 1800, scope: "new-scope", type: "Bearer", openIDToken: "id-new")
+        let expected = OAuth.Token(accessToken: "access-new", refreshToken: "refresh-new", expiresIn: 1800, scope: "new-scope", type: "Bearer", rawIDToken: "id-new")
         guard case .authorized(let selectedProvider, let current) = oauth.state else {
             Issue.record("Refresh did not publish authorization")
             return

@@ -178,7 +178,7 @@ struct OAuthStorageFailureTests {
             expiresIn: 3600, scope: nil, type: "Bearer"
         ))
         try client.keychain.set(authorization, for: provider.id)
-        defer { try? Keychain(namespace).clear() }
+        defer { _ = try? Keychain(namespace).clear() }
 
         await client.refreshToken(provider: provider)
 

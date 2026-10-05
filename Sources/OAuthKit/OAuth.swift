@@ -829,7 +829,7 @@ extension OAuth {
             expiresIn: responseToken.expiresIn,
             scope: responseToken.scope,
             type: responseToken.type,
-            openIDToken: responseToken.openIDToken
+            rawIDToken: responseToken.rawIDToken
         )
         let authorization = Authorization(issuer: provider.id, token: token)
         guard let stored = try? keychain.set(authorization, for: authorization.issuer), stored else {
