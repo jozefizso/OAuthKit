@@ -998,6 +998,39 @@ final class OAuthTests {
         #expect(String(data: basicTokenRequest!.httpBody!, encoding: .utf8)!.contains("client_id=") == false)
     }
 
+    /// Arrange authorization values with literal plus, spaces, delimiters, Unicode, and a configured query,
+    /// act by building the authorization URL, and assert form decoding restores each generated value while preserving the configured query bytes.
+    @Test("Authorization Query Uses Form Encoding Without Rewriting Configured Query")
+    func whenFormEncodingAuthorizationQuery() async throws {
+        let provider = OAuth.Provider(
+            id: "authorization-form",
+            authorizationURL: URL(string: "https://example.com/authorize?static=a%2Bb+space%20x")!,
+            accessTokenURL: URL(string: "https://example.com/token")!,
+            clientID: "client+ plus & 雪",
+            redirectURI: "com.example.app:/callback+ plus?next=a+b&x=雪",
+            scope: ["read+write space&雪"]
+        )
+
+        let request = try #require(OAuth.Request.auth(provider: provider, pkce: .init()))
+        let query = try #require(URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.percentEncodedQuery)
+
+        func formDecoded(_ value: String) throws -> String {
+            let withSpaces = value.replacingOccurrences(of: "+", with: " ")
+            return try #require(withSpaces.removingPercentEncoding)
+        }
+        var decoded = [String: String]()
+        for field in query.split(separator: "&") {
+            let pair = field.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+            guard pair.count == 2 else { continue }
+            decoded[try formDecoded(String(pair[0]))] = try formDecoded(String(pair[1]))
+        }
+
+        #expect(query.hasPrefix("static=a%2Bb+space%20x&"))
+        #expect(decoded["client_id"] == "client+ plus & 雪")
+        #expect(decoded["scope"] == "read+write space&雪")
+        #expect(decoded["redirect_uri"] == "com.example.app:/callback+ plus?next=a+b&x=雪")
+    }
+
     /// Arrange an insecure endpoint and protected-resource destination, act by building requests or attaching a token,
     /// and assert TLS failures return nil or omit the bearer credential.
     @Test("Insecure OAuth Destinations Fail Closed")

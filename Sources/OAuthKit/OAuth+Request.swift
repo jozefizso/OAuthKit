@@ -49,7 +49,12 @@ extension OAuth {
                   var urlComponents = URLComponents(string: provider.authorizationURL.absoluteString),
                   !hasOAuthReservedQueryParameters(provider.authorizationURL),
                   let queryItems = buildQueryItems(provider: provider, grantType: .authorizationCode, pkce: pkce) else { return nil }
-            urlComponents.queryItems = (urlComponents.queryItems ?? []) + queryItems
+            let encodedQueryItems = String(decoding: formEncoded(queryItems), as: UTF8.self)
+            if let configuredQuery = urlComponents.percentEncodedQuery, !configuredQuery.isEmpty {
+                urlComponents.percentEncodedQuery = configuredQuery + "&" + encodedQueryItems
+            } else {
+                urlComponents.percentEncodedQuery = encodedQueryItems
+            }
             guard let url = urlComponents.url else { return nil }
             return URLRequest(url: url)
         }
