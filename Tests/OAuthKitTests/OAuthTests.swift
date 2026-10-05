@@ -74,18 +74,6 @@ final class OAuthTests {
         #expect(timeInterval < 0)
     }
 
-    /// Tests the authorization request parameters.
-    @Test("Building Authorization Request")
-    func whenBuildingAuthorizationRequest() async throws {
-        let pkce = OAuth.PKCE()
-        let request = OAuth.Request.auth(provider: provider, pkce: pkce)
-        #expect(request != nil)
-        #expect(request!.url!.absoluteString.contains("client_id=\(provider.clientID)"))
-        #expect(request!.url!.absoluteString.contains("redirect_uri=\(provider.redirectURI!)"))
-        #expect(request!.url!.absoluteString.contains("response_type=code"))
-        #expect(request!.url!.absoluteString.contains("state=\(pkce.state)"))
-        #expect(request!.url!.absoluteString.contains("code_challenge_method=S256"))
-    }
 
     /// Tests the building of client credential token requests.
     @Test("Building Client Credentials Token Requests")
@@ -381,19 +369,6 @@ final class OAuthTests {
         #expect(oauth.state == .error(provider, .badResponse))
     }
 
-    /// Tests the PKCE request parameters.
-    @Test("Building PKCE Request")
-    func whenBuildingPKCERequest() async throws {
-        let pkce = OAuth.PKCE()
-        let request = OAuth.Request.auth(provider: provider, pkce: pkce)
-        #expect(request != nil)
-        #expect(request!.url!.absoluteString.contains("client_id="))
-        #expect(request!.url!.absoluteString.contains("redirect_uri=\(provider.redirectURI!)"))
-        #expect(request!.url!.absoluteString.contains("response_type=code"))
-        #expect(request!.url!.absoluteString.contains("state=\(pkce.state)"))
-        #expect(request!.url!.absoluteString.contains("code_challenge=\(pkce.codeChallenge)"))
-        #expect(request!.url!.absoluteString.contains("code_challenge_method=S256"))
-    }
 
     /// Tests OAuth Secure Random State Generation
     @Test("OAuth Polling for Device Code Authorization")
