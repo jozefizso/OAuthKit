@@ -100,7 +100,7 @@ public struct OAWebView: View {
                 case .receivedDeviceCode(let provider, let code):
                     if code.isExpired {
                         oauth.failDeviceAuthorization(provider: provider)
-                    } else if let url = URL(string: code.verificationUri) {
+                    } else if let url = code.verificationURL {
                         openURL(url)
                     } else {
                         oauth.failDeviceAuthorization(provider: provider)

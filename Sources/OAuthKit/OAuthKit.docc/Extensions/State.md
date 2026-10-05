@@ -34,8 +34,12 @@ struct ContentView: View {
                 }
             case .receivedDeviceCode(_, let deviceCode):
                 Text("To login, visit")
-                Text(.init("[\(deviceCode.verificationUri)](\(deviceCode.verificationUri))"))
-                    .foregroundStyle(.blue)
+                if let verificationURL = deviceCode.verificationURL {
+                    Text(.init("[\(verificationURL.absoluteString)](\(verificationURL.absoluteString))"))
+                        .foregroundStyle(.blue)
+                } else {
+                    Text("Device verification URL is unavailable.")
+                }
                 Text("and enter the following code:")
                 Text(deviceCode.userCode)
             case .error(let provider, let error):

@@ -80,8 +80,12 @@ struct ContentView: View {
                 }
             case .receivedDeviceCode(_, let deviceCode):
                 Text("To login, visit")
-                Text(.init("[\(deviceCode.verificationUri)](\(deviceCode.verificationUri))"))
-                    .foregroundStyle(.blue)
+                if let verificationURL = deviceCode.verificationURL {
+                    Text(.init("[\(verificationURL.absoluteString)](\(verificationURL.absoluteString))"))
+                        .foregroundStyle(.blue)
+                } else {
+                    Text("Device verification URL is unavailable.")
+                }
                 Text("and enter the following code:")
                 Text(deviceCode.userCode)
                     .padding()
@@ -173,9 +177,12 @@ struct ContentView: View {
                 Text("Authorized [\(provider.id)]")
             case .receivedDeviceCode(_, let deviceCode):
                 Text("To login, visit")
-                Text(.init("[\(deviceCode.verificationUri)](\(deviceCode.verificationUri))"))
-                    .foregroundStyle(.blue)
-                Text("and enter the following code:")
+                if let verificationURL = deviceCode.verificationURL {
+                    Text(.init("[\(verificationURL.absoluteString)](\(verificationURL.absoluteString))"))
+                        .foregroundStyle(.blue)
+                } else {
+                    Text("Device verification URL is unavailable.")
+                }
                 Text(deviceCode.userCode)
                     .padding()
                     .border(Color.primary)

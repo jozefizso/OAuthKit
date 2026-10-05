@@ -115,6 +115,52 @@ final class OAuthTests {
         #expect(decodedForm.queryItems?.filter { $0.name == "grant_type" }.map(\.value) == [OAuth.DeviceCode.grantType])
     }
 
+    /// Arrange invalid HTTP, custom-scheme, file, user-information, and empty-host verification URLs,
+    /// act by decoding server responses and inspecting directly initialized models, and assert invalid
+    /// URIs are rejected before state publication and never produce openable links.
+    @Test("Device Verification URLs Must Be Trusted HTTPS")
+    func whenValidatingDeviceVerificationURLs() async throws {
+        let decoder = JSONDecoder()
+        let invalidURLs = [
+            "http://example.com/device",
+            "custom://example.com/device",
+            "file:///tmp/device",
+            "https://user:password@example.com/device",
+            "https:///device",
+            "not a URL"
+        ]
+        for invalidURL in invalidURLs {
+            let json = Data("{\"device_code\":\"d\",\"user_code\":\"u\",\"verification_uri\":\"\(invalidURL)\",\"expires_in\":60}".utf8)
+            #expect(throws: (any Error).self) {
+                try decoder.decode(OAuth.DeviceCode.self, from: json)
+            }
+        }
+
+        let invalidComplete = Data("{\"device_code\":\"d\",\"user_code\":\"u\",\"verification_uri\":\"https://example.com/device\",\"verification_uri_complete\":\"http://example.com/device?user_code=u\",\"expires_in\":60}".utf8)
+        #expect(throws: (any Error).self) {
+            try decoder.decode(OAuth.DeviceCode.self, from: invalidComplete)
+        }
+
+        let valid = try decoder.decode(
+            OAuth.DeviceCode.self,
+            from: Data("{\"device_code\":\"d\",\"user_code\":\"u\",\"verification_uri\":\"https://example.com/device\",\"verification_uri_complete\":\"https://example.com/device?user_code=u\",\"expires_in\":60}".utf8)
+        )
+        #expect(valid.verificationURL?.absoluteString == "https://example.com/device")
+        #expect(valid.verificationURLComplete?.scheme == "https")
+        let roundTrip = try decoder.decode(OAuth.DeviceCode.self, from: JSONEncoder().encode(valid))
+        #expect(roundTrip.verificationUriComplete == valid.verificationUriComplete)
+
+        let directlyInitialized = OAuth.DeviceCode(
+            deviceCode: "d",
+            userCode: "u",
+            verificationUri: "http://example.com/device",
+            verificationUriComplete: "file:///tmp/device",
+            expiresIn: 60
+        )
+        #expect(directlyInitialized.verificationURL == nil)
+        #expect(directlyInitialized.verificationURLComplete == nil)
+    }
+
     /// Tests the building of token requests.
     @Test("Building Token Requests")
     func whenBuildingTokenRequests() async throws {

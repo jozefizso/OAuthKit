@@ -45,6 +45,30 @@ extension OAuth {
             let value = issued.addingTimeInterval(TimeInterval(expiresIn))
             return value.timeIntervalSince1970.isFinite ? value : nil
         }
+        /// An absolute HTTPS URL safe to display or open for device authorization, if the server URI is valid.
+        public var verificationURL: URL? {
+            guard let url = Self.secureVerificationURL(verificationUri),
+                  verificationUriComplete.map({ Self.secureVerificationURL($0) != nil }) ?? true else { return nil }
+            return url
+        }
+
+        /// A validated HTTPS URL for the optional complete verification link.
+        public var verificationURLComplete: URL? {
+            verificationUriComplete.flatMap(Self.secureVerificationURL)
+        }
+
+        private static func secureVerificationURL(_ value: String) -> URL? {
+            guard !value.utf8.contains(where: { $0 <= 0x20 || $0 == 0x7F || $0 == 0x5C }),
+                  let components = URLComponents(string: value),
+                  components.scheme?.lowercased() == "https",
+                  let host = components.host, !host.isEmpty,
+                  components.user == nil,
+                  components.password == nil,
+                  components.fragment == nil,
+                  let url = components.url,
+                  let urlHost = url.host, !urlHost.isEmpty else { return nil }
+            return url
+        }
 
         enum CodingKeys: String, CodingKey {
             case deviceCode = "device_code"
@@ -94,6 +118,14 @@ extension OAuth {
             } else {
                 verificationUri = try container.decode(String.self, forKey: .verificationUrl)
             }
+            guard verificationURL != nil else {
+                throw DecodingError.dataCorruptedError(forKey: .verificationUri, in: container,
+                                                       debugDescription: "Device verification URIs must be absolute HTTPS URLs without user information.")
+            }
+            if verificationUriComplete != nil, verificationURLComplete == nil {
+                throw DecodingError.dataCorruptedError(forKey: .verificationUriComplete, in: container,
+                                                       debugDescription: "The complete device verification URI must be an absolute HTTPS URL without user information.")
+            }
             guard expiresIn > 0, expiresIn <= Self.maximumTiming,
                   interval > 0, interval <= Self.maximumTiming,
                   expiration != nil else {
@@ -110,7 +142,7 @@ extension OAuth {
             try container.encode(deviceCode, forKey: .deviceCode)
             try container.encode(userCode, forKey: .userCode)
             try container.encode(verificationUri, forKey: .verificationUri)
-            try container.encodeIfPresent(verificationUriComplete, forKey: .verificationUri)
+            try container.encodeIfPresent(verificationUriComplete, forKey: .verificationUriComplete)
             try container.encode(interval, forKey: .interval)
             try container.encodeIfPresent(expiresIn, forKey: .expiresIn)
         }
