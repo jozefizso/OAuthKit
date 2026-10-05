@@ -19,7 +19,7 @@ The Provider holds the configuration data that is used for communicating with an
         "clientID": "CLIENT_ID",
         "clientType": "public",
         "clientAuthentication": "none",
-        "redirectURI": "oauthkit://callback",
+        "redirectURI": "com.example.oauthkit:/callback",
         "scope": [
             "user",
             "repo",
