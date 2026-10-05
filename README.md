@@ -300,14 +300,10 @@ oauth.authorize(provider: provider, grantType: grantType)
 ```
 
 ## OAuth 2.0 Provider Diagnostics
-Provider debugging is disabled by default. When enabled, diagnostics may include only the HTTP status and provider identifier. OAuth response bodies, callback URLs, authorization codes, states, verifier values, tokens, and secrets are never logged.
+Provider debugging is disabled by default. When enabled, diagnostics contain only response status and provider ID; raw responses, callback URLs, codes, state, device credentials, tokens, and secrets are never logged.
 
 ### Arrange / Act / Assert: captured-log credential safety
-**Arrange:** Enable provider debugging, install a captured `debugPrint` output sink in the test harness, and configure a test response containing recognizable access-token, refresh-token, ID-token, device-code, authorization-code, and state sentinel values. Also prepare a callback URL containing code and state sentinels.
-
-**Act:** Exercise token, refresh, device-code, client-credentials, device-polling responses and process a successful callback plus a state-mismatch callback.
-
-**Assert:** The captured log contains only status and provider identifiers (and, for mismatch, a generic mismatch diagnostic). It contains none of the sentinels or any callback URL/query data. Repeat with provider debugging disabled and assert no diagnostics are emitted.
+The `whenCapturingOAuthDiagnostics` test in `Tests/OAuthKitTests/OAuthTests.swift` arranges sentinel authorization, callback, device, access-token, and refresh-token values and installs a captured diagnostic sink. It exercises token, refresh, device-code, client-credentials, polling, and a mismatched callback, then asserts that captured output contains only status/provider metadata and none of the sentinels or token JSON field names.
 
 ## OAuthKit Sample Application
 You can find a sample application integrated with OAuthKit [here](https://github.com/codefiesta/OAuthSample).

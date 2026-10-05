@@ -97,6 +97,8 @@ public final class OAuth: Sendable {
     /// The json decoder
     @ObservationIgnored
     private let decoder: JSONDecoder = .init()
+    @ObservationIgnored
+    var diagnosticOutput: (String) -> Void = { debugPrint($0) }
 
     /// Injectable device-poll delay for deterministic polling tests.
     @ObservationIgnored
@@ -279,6 +281,10 @@ public extension OAuth {
         return true
     }
 
+    private func logResponse(_ operation: String, response: URLResponse, provider: Provider) {
+        guard provider.debug else { return }
+        diagnosticOutput("OAuth \(operation) response status: \(response.statusCode() ?? -1), provider: \(provider.id)")
+    }
     /// Requests to exchange a code for an access token.
     /// See: https://datatracker.ietf.org/doc/html/rfc6749#section-4.1.3
     /// - Parameters:
@@ -504,9 +510,7 @@ extension OAuth {
         }
         guard transaction == generation, !Task.isCancelled else { return }
 
-        if provider.debug {
-            debugPrint("OAuth token response status: \(response.statusCode() ?? -1), provider: \(provider.id)")
-        }
+        logResponse("token", response: response, provider: provider)
 
         // Decode the token
         guard response.isOK, let token = try? decoder.decode(Token.self, from: data) else {
@@ -573,9 +577,7 @@ extension OAuth {
         }
         guard expectedGeneration == generation, !Task.isCancelled else { return }
 
-        if provider.debug {
-            debugPrint("OAuth refresh response status: \(response.statusCode() ?? -1), provider: \(provider.id)")
-        }
+        logResponse("refresh", response: response, provider: provider)
 
         guard response.isOK else {
             if let error = try? decoder.decode(OAuthErrorResponse.self, from: data) {
@@ -627,9 +629,7 @@ extension OAuth {
         }
         guard transaction == generation, !Task.isCancelled else { return }
 
-        if provider.debug {
-            debugPrint("OAuth device-code response status: \(response.statusCode() ?? -1), provider: \(provider.id)")
-        }
+        logResponse("device-code", response: response, provider: provider)
 
         // Decode the device code
         guard response.isOK, let deviceCode = try? decoder.decode(DeviceCode.self, from: data) else {
@@ -654,9 +654,7 @@ extension OAuth {
         }
         guard transaction == generation, !Task.isCancelled else { return }
 
-        if provider.debug {
-            debugPrint("OAuth client-credentials response status: \(response.statusCode() ?? -1), provider: \(provider.id)")
-        }
+        logResponse("client-credentials", response: response, provider: provider)
 
         // Decode the token
         guard response.isOK, let token = try? decoder.decode(Token.self, from: data) else {
@@ -736,9 +734,7 @@ extension OAuth {
                 return
             }
 
-            if provider.debug {
-                debugPrint("Device token response: [\(response.statusCode() ?? -1)]")
-            }
+            logResponse("device-token", response: response, provider: provider)
             guard response.isOK else {
                 guard let error = Self.oauthError(from: data) else {
                     publish(state: .error(provider, .decoding))

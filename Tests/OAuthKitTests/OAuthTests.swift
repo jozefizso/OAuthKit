@@ -745,6 +745,76 @@ final class OAuthTests {
         #expect(await waitForAuthorization(oauth))
     }
 
+    /// Captures every OAuth response diagnostic and verifies that no credential payload is emitted.
+    @Test("Captured OAuth Diagnostics Contain No Credentials")
+    func whenCapturingOAuthDiagnostics() async throws {
+        var debugProvider = provider
+        debugProvider.debug = true
+        let options: [OAuth.Option: Any] = [
+            .applicationTag: "oauthkit.diagnostics." + .secureRandom(),
+            .urlSession: Self.urlSession
+        ]
+        let diagnosticOAuth = OAuth(providers: [debugProvider], options: options)
+        var captured = [String]()
+        diagnosticOAuth.diagnosticOutput = { captured.append($0) }
+        var secrets = ["AUTH_CODE_SENTINEL", "CALLBACK_CODE_SENTINEL", "CALLBACK_STATE_SENTINEL", "DEVICE_CODE_SENTINEL"]
+
+        await diagnosticOAuth.requestToken(provider: debugProvider, code: secrets[0])
+        if case .authorized(_, let authorization) = diagnosticOAuth.state {
+            secrets.append(authorization.token.accessToken)
+            if let refreshToken = authorization.token.refreshToken { secrets.append(refreshToken) }
+        }
+        await diagnosticOAuth.refreshToken(provider: debugProvider)
+        if case .authorized(_, let authorization) = diagnosticOAuth.state {
+            secrets.append(authorization.token.accessToken)
+            if let refreshToken = authorization.token.refreshToken { secrets.append(refreshToken) }
+        }
+        await diagnosticOAuth.requestDeviceCode(provider: debugProvider)
+        if case .receivedDeviceCode(_, let deviceCode) = diagnosticOAuth.state {
+            secrets.append(deviceCode.deviceCode)
+            secrets.append(deviceCode.userCode)
+        }
+        await diagnosticOAuth.requestClientCredentials(provider: debugProvider)
+        if case .authorized(_, let authorization) = diagnosticOAuth.state {
+            secrets.append(authorization.token.accessToken)
+            if let refreshToken = authorization.token.refreshToken { secrets.append(refreshToken) }
+        }
+        let deviceCode = OAuth.DeviceCode(
+            deviceCode: secrets[3],
+            userCode: "DEVICE_USER_CODE_SENTINEL",
+            verificationUri: "https://example.com/device",
+            expiresIn: 1800,
+            interval: 5
+        )
+        secrets.append(deviceCode.userCode)
+        await diagnosticOAuth.poll(provider: debugProvider, deviceCode: deviceCode)
+        if case .authorized(_, let authorization) = diagnosticOAuth.state {
+            secrets.append(authorization.token.accessToken)
+            if let refreshToken = authorization.token.refreshToken { secrets.append(refreshToken) }
+        }
+
+        diagnosticOAuth.authorize(provider: debugProvider)
+        if let redirect = debugProvider.redirectURI,
+           var callback = URLComponents(string: redirect) {
+            callback.queryItems = [
+                URLQueryItem(name: "code", value: "CALLBACK_CODE_SENTINEL"),
+                URLQueryItem(name: "state", value: "CALLBACK_STATE_SENTINEL")
+            ]
+            if let url = callback.url {
+                #expect(!diagnosticOAuth.handleAuthorizationCallback(url))
+            }
+        }
+        let output = captured.joined(separator: "\n")
+        #expect(captured.count == 5)
+        #expect(captured.allSatisfy { $0.contains("status: 200") && $0.contains(debugProvider.id) })
+        #expect(secrets.allSatisfy { !output.contains($0) })
+        #expect(!output.contains("access_token"))
+        #expect(!output.contains("refresh_token"))
+        #expect(!output.contains("id_token"))
+        #expect(!output.contains("CALLBACK_STATE_SENTINEL"))
+        diagnosticOAuth.clear()
+    }
+
     /// Tests OAuth Secure Random State Generation
     @Test("OAuth Secure Random State")
     func whenGeneratingOAuthSecureRandomState() async throws {
