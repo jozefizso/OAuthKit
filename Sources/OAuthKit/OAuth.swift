@@ -173,6 +173,11 @@ public extension OAuth {
             guard provider.redirectURI != nil,
                   isValidRegisteredRedirect(provider.redirectURI),
                   (provider.issuer == nil || isCanonicalIssuer(provider.issuer!)),
+                  provider.issuer == nil || providers.allSatisfy({ candidate in
+                      candidate.issuer != provider.issuer ||
+                      (candidate.authorizationURL.absoluteString == provider.authorizationURL.absoluteString &&
+                       candidate.accessTokenURL.absoluteString == provider.accessTokenURL.absoluteString)
+                  }),
                   provider.issuer != nil || providers.allSatisfy({ candidate in
                       (candidate.authorizationURL.absoluteString == provider.authorizationURL.absoluteString &&
                        candidate.accessTokenURL.absoluteString == provider.accessTokenURL.absoluteString) ||

@@ -720,6 +720,39 @@ final class OAuthTests {
     }
 
 
+    @Test("An issuer cannot identify conflicting authorization-server endpoints")
+    func whenRejectingConflictingIssuerBindings() {
+        let honest = OAuth.Provider(
+            id: "honest", authorizationURL: URL(string: "https://honest.example/authorize")!,
+            accessTokenURL: URL(string: "https://honest.example/token")!,
+            issuer: "https://honest.example", clientID: "client",
+            redirectURI: "com.example.oauthkit:/callback"
+        )
+        var conflicting = honest
+        conflicting.id = "conflicting"
+        conflicting.accessTokenURL = URL(string: "https://attacker.example/token")!
+        oauth.providers = [honest, conflicting]
+
+        oauth.authorize(provider: conflicting)
+
+        #expect(oauth.state == .error(conflicting, .malformedURL))
+        #expect(oauth.activeAuthorizationURL == nil)
+
+        conflicting.accessTokenURL = honest.accessTokenURL
+        conflicting.authorizationURL = URL(string: "https://attacker.example/authorize")!
+        oauth.providers = [honest, conflicting]
+        oauth.authorize(provider: conflicting)
+        #expect(oauth.state == .error(conflicting, .malformedURL))
+        #expect(oauth.activeAuthorizationURL == nil)
+
+        conflicting.authorizationURL = honest.authorizationURL
+        conflicting.clientID = "second-registration"
+        oauth.providers = [honest, conflicting]
+        oauth.authorize(provider: conflicting)
+        #expect(oauth.activeAuthorizationProvider == conflicting)
+        oauth.cancelAuthorization()
+    }
+
     /// Tests the single-use callback transaction against issuer and redirect mix-up inputs.
     @Test("Authorization Callback Binding and Single Use")
     func whenBindingAuthorizationCallbacks() async throws {
