@@ -150,6 +150,16 @@ public extension OAuth {
     func authorize(provider: Provider, grantType: GrantType = .pkce(.init())) {
         switch grantType {
         case .pkce:
+            guard (provider.issuer == nil || isCanonicalIssuer(provider.issuer!)),
+                  provider.issuer != nil || providers.allSatisfy({ candidate in
+                      candidate.id == provider.id ||
+                      candidate.authorizationURL.absoluteString == provider.authorizationURL.absoluteString &&
+                          candidate.accessTokenURL.absoluteString == provider.accessTokenURL.absoluteString ||
+                      candidate.redirectURI != provider.redirectURI
+                  }) else {
+                state = .error(provider, .malformedURL)
+                return
+            }
             supersedeTasks()
             state = .authorizing(provider, .pkce(.init()))
         case .deviceCode:
@@ -183,14 +193,45 @@ public extension OAuth {
               callback.scheme == redirect.scheme,
               callback.host == redirect.host,
               callback.port == redirect.port,
+              callback.user == redirect.user,
+              callback.password == redirect.password,
               callback.path == redirect.path,
-              let items = callback.queryItems,
-              items.filter({ $0.name == "state" }).count == 1,
-              items.filter({ $0.name == "code" }).count == 1,
-              items.first(where: { $0.name == "state" })?.value == pkce.state,
-              let code = items.first(where: { $0.name == "code" })?.value else { return false }
+              callback.fragment == redirect.fragment,
+              let callbackItems = callback.queryItems,
+              let redirectItems = redirect.queryItems else { return false }
+        let stateItems = callbackItems.filter { $0.name == "state" }
+        let codeItems = callbackItems.filter { $0.name == "code" }
+        let issuerItems = callbackItems.filter { $0.name == "iss" }
+        guard stateItems.count == 1,
+              codeItems.count == 1,
+              stateItems[0].value == pkce.state,
+              let code = codeItems[0].value,
+              issuerItems.count <= 1 else { return false }
+        if let issuer = provider.issuer {
+            guard isCanonicalIssuer(issuer), issuerItems.count == 1, issuerItems[0].value == issuer else { return false }
+        } else if let receivedIssuer = issuerItems.first?.value,
+                  providers.contains(where: { $0.issuer != nil && $0.issuer != receivedIssuer }) {
+            return false
+        }
+        for item in redirectItems {
+            let matches = callbackItems.filter { $0.name == item.name }
+            guard matches.count == 1, matches[0].value == item.value else { return false }
+        }
+        let staticNames = Set(redirectItems.map(\.name))
+        guard callbackItems.allSatisfy({ staticNames.contains($0.name) || ["state", "code", "iss"].contains($0.name) }) else { return false }
         state = .empty
         token(provider: provider, code: code, pkce: pkce)
+        return true
+    }
+
+    private func isCanonicalIssuer(_ issuer: String) -> Bool {
+        guard let components = URLComponents(string: issuer),
+              components.scheme == "https",
+              components.host?.isEmpty == false,
+              components.query == nil,
+              components.fragment == nil,
+              components.user == nil,
+              components.password == nil else { return false }
         return true
     }
 

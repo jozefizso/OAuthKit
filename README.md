@@ -232,6 +232,15 @@ protection on replacement. Such reads fail without displaying an authentication
 prompt; enable the option explicitly to authenticate.
 
 Developers can also implement private browsing by setting the **.useNonPersistentWebDataStore** option to true. This forces the [WKWebView](https://developer.apple.com/documentation/webkit/wkwebview) used during authorization flows to use a non-persistent data store, preventing data from being written to the file system.
+### Authorization-server mix-up protection
+Set `issuer` to the authorization server's exact RFC 9207 issuer string when the server returns `iss` in authorization responses. The configured value must be an HTTPS issuer without query or fragment. OAuthKit binds the provider and token endpoint to the pending transaction, requires the callback issuer, and compares it exactly. When the issuer parameter is unavailable, authorization servers configured together must use distinct redirect URIs.
+
+#### Arrange / Act / Assert: issuer and redirect binding
+**Arrange:** Configure two authorization servers with distinct issuers and redirect URIs (or, when `iss` is unavailable, distinct redirects), and begin an authorization for one server.
+
+**Act:** Deliver callbacks with the valid state but a missing, wrong-case, wrong-value, duplicate `iss`, lookalike redirect URI, altered static redirect query, duplicate static query item, duplicate state, or duplicate code; then deliver one exact callback with the correct issuer and redirect.
+
+**Assert:** Every mismatch is rejected without exchanging or consuming the transaction. The exact callback is accepted and exchanges only against the token endpoint frozen for its provider; a replay is rejected.
 
 
 ```swift

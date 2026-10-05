@@ -27,6 +27,8 @@ extension OAuth {
 
         /// The provider unique id.
         public var id: String
+        /// Canonical authorization-server issuer identifier from RFC 9207.
+        public var issuer: String?
         /// The provider icon.
         public var icon: URL?
         /// The provider authorization url.
@@ -57,6 +59,7 @@ extension OAuth {
             case id, icon, authorizationURL, accessTokenURL, deviceCodeURL
             case clientID, clientSecret, clientType, clientAuthentication
             case redirectURI, scope, customUserAgent, debug
+            case issuer
         }
 
         /// Creates provider configuration. Client classification is explicit and defaults to a public client.
@@ -66,6 +69,7 @@ extension OAuth {
         ///   - authorizationURL: The provider authorization URL
         ///   - accessTokenURL: The provider access-token URL
         ///   - deviceCodeURL: The optional device authorization URL
+        ///   - issuer: The exact canonical authorization-server issuer identifier, when supported.
         ///   - clientID: The client identifier
         ///   - clientSecret: A secret for confidential clients
         ///   - clientType: Explicit client classification, public by default
@@ -79,6 +83,7 @@ extension OAuth {
                     authorizationURL: URL,
                     accessTokenURL: URL,
                     deviceCodeURL: URL? = nil,
+                    issuer: String? = nil,
                     clientID: String,
                     clientSecret: String? = nil,
                     clientType: ClientType = .public,
@@ -92,6 +97,7 @@ extension OAuth {
             self.authorizationURL = authorizationURL
             self.accessTokenURL = accessTokenURL
             self.deviceCodeURL = deviceCodeURL
+            self.issuer = issuer
             self.clientID = clientID
             self.clientSecret = clientSecret
             self.clientType = clientType
@@ -109,6 +115,7 @@ extension OAuth {
             icon = try container.decodeIfPresent(URL.self, forKey: .icon)
             authorizationURL = try container.decode(URL.self, forKey: .authorizationURL)
             accessTokenURL = try container.decode(URL.self, forKey: .accessTokenURL)
+            issuer = try container.decodeIfPresent(String.self, forKey: .issuer)
             deviceCodeURL = try container.decodeIfPresent(URL.self, forKey: .deviceCodeURL)
             clientID = try container.decode(String.self, forKey: .clientID)
             clientSecret = try container.decodeIfPresent(String.self, forKey: .clientSecret)
