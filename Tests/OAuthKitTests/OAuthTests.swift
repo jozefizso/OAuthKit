@@ -566,6 +566,41 @@ final class OAuthTests {
         #expect(URLComponents(url: authRequest!.url!, resolvingAgainstBaseURL: false)?.queryItems?.first?.name == "tenant")
     }
 
+
+    /// Arrange redirect URIs for browser and native applications, act by building authorization requests,
+    /// and assert only HTTPS or loopback/custom-scheme redirects are accepted.
+    @Test("Native Redirect URI Exceptions Are Narrow")
+    func whenValidatingNativeRedirectURIs() async throws {
+        let base = OAuth.Provider(
+            id: "redirect",
+            authorizationURL: URL(string: "https://example.com/authorize")!,
+            accessTokenURL: URL(string: "https://example.com/token")!,
+            clientID: "public-client",
+            redirectURI: "http://127.0.0.1:49152/callback"
+        )
+        #expect(OAuth.Request.auth(provider: base, grantType: .authorizationCode("state")) != nil)
+        var invalid = base
+        invalid.redirectURI = "http://example.com/callback"
+        #expect(OAuth.Request.auth(provider: invalid, grantType: .authorizationCode("state")) == nil)
+        var custom = base
+        custom.redirectURI = "com.example.app:/oauth2redirect"
+        #expect(OAuth.Request.auth(provider: custom, grantType: .authorizationCode("state")) != nil)
+    }
+
+    /// Arrange an unclassified client with no secret, act by requesting client credentials, and
+    /// assert public clients cannot use the confidential-only grant.
+    @Test("Public Clients Cannot Use Client Credentials")
+    func whenRejectingPublicClientCredentialsGrant() async throws {
+        let publicProvider = OAuth.Provider(
+            id: "public",
+            authorizationURL: URL(string: "https://example.com/authorize")!,
+            accessTokenURL: URL(string: "https://example.com/token")!,
+            clientID: "public-client"
+        )
+        #expect(publicProvider.clientType == .public)
+        #expect(publicProvider.clientAuthentication == .none)
+        #expect(OAuth.Request.token(provider: publicProvider) == nil)
+    }
     /// Streams the oauth status until we receive an authorization.
     /// This should only be used on test methods that expect an authorization to be inserted into the keychain.
     private func waitForAuthorization(_ oauth: OAuth) async -> Bool {

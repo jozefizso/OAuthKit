@@ -48,7 +48,9 @@ extension OAuth {
         ///   - grantType: the grant type
         /// - Returns: an `/authorization` url request
         static func auth(provider: Provider, grantType: GrantType) -> URLRequest? {
-            guard var urlComponents = URLComponents(string: provider.authorizationURL.absoluteString),
+            guard provider.authorizationURL.scheme?.lowercased() == "https",
+                  provider.redirectURI.map(isAllowedRedirectURI) ?? true,
+                  var urlComponents = URLComponents(string: provider.authorizationURL.absoluteString),
                   !hasOAuthReservedQueryParameters(provider.authorizationURL) else { return nil }
             guard let queryItems = buildQueryItems(provider: provider, grantType: grantType) else { return nil }
             urlComponents.queryItems = (urlComponents.queryItems ?? []) + queryItems
@@ -267,7 +269,8 @@ extension OAuth {
             queryItems: [URLQueryItem],
             keepsClientIDInBodyForBasic: Bool
         ) -> URLRequest? {
-            guard !hasOAuthReservedQueryParameters(url) else { return nil }
+            guard url.scheme?.lowercased() == "https",
+                  !hasOAuthReservedQueryParameters(url) else { return nil }
             var items = queryItems
             var authorizationValue: String?
             switch (provider.clientType, provider.clientAuthentication) {
@@ -299,6 +302,19 @@ extension OAuth {
             }
             return request
         }
+        private static func isAllowedRedirectURI(_ value: String) -> Bool {
+            guard let components = URLComponents(string: value),
+                  let scheme = components.scheme?.lowercased(),
+                  components.user == nil,
+                  components.password == nil,
+                  components.fragment == nil else { return false }
+            if scheme == "https" { return true }
+            if scheme == "http" {
+                return components.host == "127.0.0.1" || components.host == "::1"
+            }
+            return components.host == nil && scheme.contains(".")
+        }
+
 
         private static func hasOAuthReservedQueryParameters(_ url: URL) -> Bool {
             guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return true }

@@ -14,9 +14,10 @@ private let authHeader = "Authorization"
 
 public extension URLRequest {
 
-    /// Attempts to set the authorization header using the auth token.
+    /// Attaches a bearer token only to HTTPS protected-resource requests.
     /// - Parameter auth: the oauth authorization
     mutating func addAuthorization(auth: OAuth.Authorization) {
-        addValue("\(auth.token.type) \(auth.token.accessToken)", forHTTPHeaderField: authHeader)
+        guard url?.scheme?.lowercased() == "https" else { return }
+        setValue("\(auth.token.type) \(auth.token.accessToken)", forHTTPHeaderField: authHeader)
     }
 }
