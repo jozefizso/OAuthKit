@@ -5,6 +5,7 @@
 //  Created by Kevin McKee
 //
 
+import Foundation
 @testable import OAuthKit
 import Testing
 #if canImport(Security)
