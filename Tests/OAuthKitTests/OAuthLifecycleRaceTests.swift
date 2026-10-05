@@ -124,6 +124,7 @@ struct OAuthLifecycleRaceTests {
         // Act: release one response carrying a rotated refresh token.
         await gate.release(withAccessToken: "refreshed-token", refreshToken: "rotated-refresh-token")
         let monitor = OAuth.Monitor(oauth: oauth)
+        defer { monitor.stop() }
         for await state in monitor.stream {
             if case .authorized(_, let authorization) = state,
                authorization.token.accessToken == "refreshed-token" {
@@ -162,6 +163,7 @@ struct OAuthLifecycleRaceTests {
         oauth.cancelAuthorization(generation: generation)
         await gate.release(withAccessToken: "client-credentials-token")
         let monitor = OAuth.Monitor(oauth: oauth)
+        defer { monitor.stop() }
         for await state in monitor.stream {
             if case .authorized = state { break }
         }
@@ -544,6 +546,7 @@ struct OAuthLifecycleRaceTests {
         try #require(coordinator.refreshFlight(for: oldProvider.id)?.waiterCount == 2)
 
         let ownerMonitor = OAuth.Monitor(oauth: owner)
+        defer { ownerMonitor.stop() }
         let ownerCompleted = Task { @MainActor in
             for await state in ownerMonitor.stream {
                 if case .authorized(let provider, _) = state, provider.id == newProvider.id {
@@ -606,6 +609,7 @@ struct OAuthLifecycleRaceTests {
         try #require(try oauth.keychain.set(original, for: oldProvider.id))
         oauth.state = .empty
         let monitor = OAuth.Monitor(oauth: oauth)
+        defer { monitor.stop() }
         let completed = Task { @MainActor in
             for await state in monitor.stream {
                 switch state {

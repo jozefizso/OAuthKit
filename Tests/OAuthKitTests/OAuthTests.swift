@@ -1072,6 +1072,7 @@ final class OAuthTests {
         defer { try? oauth.clear() }
         oauth.authorize(provider: provider, grantType: .clientCredentials)
         let monitor = OAuth.Monitor(oauth: oauth)
+        defer { monitor.stop() }
         for await state in monitor.stream {
             if case .error = state {
                 Issue.record("Client-credentials authorization failed before task completion")
@@ -1088,6 +1089,7 @@ final class OAuthTests {
     /// This should only be used on test methods that expect an authorization to be inserted into the keychain.
     private func waitForAuthorization(_ oauth: OAuth) async -> Bool {
         let monitor: OAuth.Monitor = .init(oauth: oauth)
+        defer { monitor.stop() }
         for await state in monitor.stream {
             switch state {
             case .error:
