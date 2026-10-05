@@ -27,7 +27,7 @@ struct OAuthLifecycleRaceTests {
 
         // Assert: the stale response neither restores keychain data nor publishes an authorization.
         #expect(oauth.state == .empty)
-        let stored: OAuth.Authorization? = try? oauth.keychain.get(key: provider.id)
+        let stored: OAuth.Authorization? = try oauth.keychain.get(key: provider.id)
         #expect(stored == nil)
     }
 
@@ -68,15 +68,14 @@ struct OAuthLifecycleRaceTests {
         // Arrange: hold a device-code response while a newer PKCE flow is pending.
         let request = Task { await oauth.requestDeviceCode(provider: provider) }
         await gate.waitForRequest()
-        let pkce = OAuth.PKCE()
 
         // Act: supersede the device request and release its successful response.
-        oauth.authorize(provider: provider, grantType: .pkce(pkce))
+        oauth.authorize(provider: provider)
         await gate.release(withAccessToken: "stale-device-response")
         await request.value
 
         // Assert: the newer flow and stored credentials remain unchanged.
-        #expect(oauth.state == .authorizing(provider, .pkce(pkce)))
+        #expect(oauth.state == .authorizing(provider, .authorizationCode))
         let stored: OAuth.Authorization? = try oauth.keychain.get(key: provider.id)
         #expect(stored == oldAuthorization)
     }
@@ -93,15 +92,14 @@ struct OAuthLifecycleRaceTests {
         // Arrange: hold a client-credentials response while a newer PKCE flow is pending.
         let request = Task { await oauth.requestClientCredentials(provider: provider) }
         await gate.waitForRequest()
-        let pkce = OAuth.PKCE()
 
         // Act: supersede the request and release its successful response.
-        oauth.authorize(provider: provider, grantType: .pkce(pkce))
+        oauth.authorize(provider: provider)
         await gate.release(withAccessToken: "stale-client-response")
         await request.value
 
         // Assert: the newer flow and stored credentials remain unchanged.
-        #expect(oauth.state == .authorizing(provider, .pkce(pkce)))
+        #expect(oauth.state == .authorizing(provider, .authorizationCode))
         let stored: OAuth.Authorization? = try oauth.keychain.get(key: provider.id)
         #expect(stored == oldAuthorization)
     }
@@ -118,6 +116,7 @@ struct OAuthLifecycleRaceTests {
         oauth.state = .empty
 
         // Arrange: start two public refresh authorizations while the first response is held.
+        oauth.state = .empty
         oauth.authorize(provider: provider, grantType: .refreshToken)
         oauth.authorize(provider: provider, grantType: .refreshToken)
         await gate.waitForRequest()
@@ -138,6 +137,65 @@ struct OAuthLifecycleRaceTests {
         #expect(stored?.token.refreshToken == "rotated-refresh-token")
     }
 
+    @Test("A superseded browser callback cannot replace client credentials")
+    func browserCallbackCannotReplaceClientCredentials() async throws {
+        let host = UUID().uuidString.lowercased() + ".oauthkit.test"
+        let gate = OAuthHeldResponseGate()
+        await OAuthHeldResponseRegistry.register(gate, for: host)
+        defer { Task { await OAuthHeldResponseRegistry.remove(for: host) } }
+        let provider = Self.provider(host: host)
+        let (oauth, _) = try Self.oauth(provider: provider)
+        defer { _ = try? oauth.clear() }
+        oauth.authorize(provider: provider)
+        let generation = try #require(oauth.activeAuthorizationGeneration)
+        let authorizationURL = try #require(oauth.activeAuthorizationURL)
+        let state = try #require(URLComponents(url: authorizationURL, resolvingAgainstBaseURL: false)?
+            .queryItems?.first(where: { $0.name == "state" })?.value)
+        var callback = try #require(URLComponents(string: provider.redirectURI!))
+        callback.queryItems = [.init(name: "code", value: "old-browser-code"), .init(name: "state", value: state)]
+        let callbackURL = try #require(callback.url)
+
+        oauth.authorize(provider: provider, grantType: .clientCredentials)
+        try #require(oauth.activeAuthorizationURL == nil)
+        await gate.waitForRequest()
+        #expect(!oauth.handleAuthorizationCallback(callbackURL, generation: generation))
+        oauth.cancelAuthorization(generation: generation)
+        await gate.release(withAccessToken: "client-credentials-token")
+        let monitor = OAuth.Monitor(oauth: oauth)
+        for await state in monitor.stream {
+            if case .authorized = state { break }
+        }
+        #expect(await gate.requestCount == 1)
+        guard case .authorized(_, let authorization) = oauth.state else {
+            Issue.record("The replacement client-credentials flow must complete")
+            return
+        }
+        #expect(authorization.token.accessToken == "client-credentials-token")
+    }
+
+    @Test("Device verification failure cannot be overwritten by a held token response")
+    func deviceVerificationFailureRejectsLateToken() async throws {
+        let host = UUID().uuidString.lowercased() + ".oauthkit.test"
+        let gate = OAuthHeldResponseGate()
+        await OAuthHeldResponseRegistry.register(gate, for: host)
+        defer { Task { await OAuthHeldResponseRegistry.remove(for: host) } }
+        let provider = Self.provider(host: host)
+        let (oauth, original) = try Self.oauth(provider: provider)
+        defer { _ = try? oauth.clear() }
+        let code = OAuth.DeviceCode(deviceCode: "device", userCode: "user",
+                                    verificationUri: "https://example.com/device", expiresIn: 30, interval: 1)
+        oauth.state = .receivedDeviceCode(provider, code)
+        oauth.devicePollingSleep = { _ in }
+        let polling = Task { await oauth.poll(provider: provider, deviceCode: code) }
+        await gate.waitForRequest()
+        oauth.failDeviceAuthorization(provider: provider)
+        await gate.release(withAccessToken: "must-not-be-stored")
+        await polling.value
+        #expect(oauth.state == .error(provider, .badResponse))
+        let stored: OAuth.Authorization? = try oauth.keychain.get(key: provider.id)
+        #expect(stored == original)
+    }
+
     private static func provider(host: String) -> OAuth.Provider {
         .init(id: host,
               authorizationURL: URL(string: "https://\(host)/authorize")!,
@@ -146,7 +204,7 @@ struct OAuthLifecycleRaceTests {
               clientID: "test-client",
               clientSecret: "test-secret",
               clientType: .confidential,
-              redirectURI: "com.example.oauthkit:/oauth/callback")
+              redirectURI: "com.example.oauthkit.lifecycle:/callback")
     }
 
     private static func oauth(provider: OAuth.Provider) throws -> (OAuth, OAuth.Authorization) {

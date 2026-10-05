@@ -30,16 +30,14 @@ enum OAuthExternalAuthenticationCallback {
 }
 
 typealias OAuthExternalAuthenticationSessionFactory =
-    @MainActor (URL, OAuthExternalAuthenticationCallback, @escaping (URL?, Error?) -> Void) -> any OAuthExternalAuthenticationSession
+    @MainActor (URL, OAuthExternalAuthenticationCallback, @escaping (URL?, Error?) -> Void) -> (any OAuthExternalAuthenticationSession)?
 
 
 /// Presents OAuth authorization in the operating system's trusted external user agent.
 @MainActor
 public struct OAWebView: View {
     let oauth: OAuth
-    @State private var session: (any OAuthExternalAuthenticationSession)?
-    @State private var sessionGeneration: UInt64?
-    @State private var presentationAnchor: ASPresentationAnchor?
+    @State private var presentation: AuthenticationPresentationAnchor
     @Environment(\.openURL) private var openURL
     private let sessionFactory: OAuthExternalAuthenticationSessionFactory
 
@@ -54,7 +52,7 @@ public struct OAWebView: View {
                         completionHandler: completion
                     )
                 }
-                return UnsupportedExternalAuthenticationSession()
+                return nil
             case .customScheme(let scheme):
                 if #available(iOS 17.4, macOS 14.4, visionOS 1.1, *) {
                     return ASWebAuthenticationSession(
@@ -75,13 +73,15 @@ public struct OAWebView: View {
     init(oauth: OAuth, sessionFactory: @escaping OAuthExternalAuthenticationSessionFactory) {
         self.oauth = oauth
         self.sessionFactory = sessionFactory
+        let presentation = AuthenticationPresentationAnchor()
+        self._presentation = State(wrappedValue: presentation)
     }
 
     public var body: some View {
         Color.clear
             .background(WindowAnchorReader { anchor in
                 guard let anchor else { return }
-                presentationAnchor = anchor
+                presentation.anchor = anchor
                 if let provider = oauth.activeAuthorizationProvider {
                     start(provider: provider)
                 }
@@ -115,9 +115,9 @@ public struct OAWebView: View {
     func start(provider: OAuth.Provider, anchor: ASPresentationAnchor? = nil) {
         guard let generation = oauth.activeAuthorizationGeneration,
               oauth.activeAuthorizationProvider?.id == provider.id else { return }
-        if sessionGeneration == generation, session != nil { return }
+        if presentation.generation == generation, presentation.session != nil { return }
         cancelSession()
-        guard let presentationAnchor = anchor ?? presentationAnchor,
+        guard let presentationAnchor = anchor ?? presentation.anchor,
               let redirect = provider.redirectURI,
               let redirectComponents = URLComponents(string: redirect),
               let scheme = redirectComponents.scheme,
@@ -138,7 +138,7 @@ public struct OAWebView: View {
             callback = .customScheme(scheme)
         }
 
-        let authSession = sessionFactory(authorizationURL, callback) { [weak oauth] callbackURL, error in
+        let completion: (URL?, Error?) -> Void = { [weak oauth] callbackURL, error in
             Task { @MainActor in
                 guard let oauth, oauth.activeAuthorizationGeneration == generation else { return }
                 if let callbackURL {
@@ -150,10 +150,15 @@ public struct OAWebView: View {
                 }
             }
         }
-        authSession.presentationContextProvider = AuthenticationPresentationAnchor(anchor: presentationAnchor)
+        guard let authSession = sessionFactory(authorizationURL, callback, completion) else {
+            oauth.cancelAuthorization(generation: generation)
+            return
+        }
+        presentation.anchor = presentationAnchor
+        authSession.presentationContextProvider = presentation
         authSession.prefersEphemeralWebBrowserSession = !oauth.persistBrowserSession
-        session = authSession
-        sessionGeneration = generation
+        presentation.session = authSession
+        presentation.generation = generation
         guard authSession.start() else {
             cancelSession()
             oauth.cancelAuthorization(generation: generation)
@@ -162,7 +167,7 @@ public struct OAWebView: View {
     }
 
     func cancel() {
-        let generation = sessionGeneration
+        let generation = presentation.generation
         cancelSession()
         if let generation {
             oauth.cancelAuthorization(generation: generation)
@@ -170,31 +175,24 @@ public struct OAWebView: View {
     }
 
     private func cancelSession() {
-        session?.cancel()
-        session = nil
-        sessionGeneration = nil
+        presentation.session?.cancel()
+        presentation.session = nil
+        presentation.generation = nil
     }
 }
 
-@MainActor
-private final class UnsupportedExternalAuthenticationSession: OAuthExternalAuthenticationSession {
-    var prefersEphemeralWebBrowserSession = false
-    var presentationContextProvider: (any ASWebAuthenticationPresentationContextProviding)?
-
-    func start() -> Bool { false }
-    func cancel() {}
-}
 
 @MainActor
 private final class AuthenticationPresentationAnchor: NSObject, ASWebAuthenticationPresentationContextProviding {
-    private let anchor: ASPresentationAnchor
-
-    init(anchor: ASPresentationAnchor) {
-        self.anchor = anchor
-    }
+    weak var anchor: ASPresentationAnchor?
+    var session: (any OAuthExternalAuthenticationSession)?
+    var generation: UInt64?
 
     func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
-        anchor
+        guard let anchor else {
+            preconditionFailure("An authentication session requires its hosting window")
+        }
+        return anchor
     }
 }
 
@@ -251,3 +249,4 @@ private final class AnchorView: UIView {
 #endif
 
 
+#endif

@@ -141,6 +141,7 @@ public final class OAuth: Sendable {
 private struct OAuthPendingAuthorization {
     let provider: OAuth.Provider
     let pkce: OAuth.PKCE
+    let authorizationURL: URL
     let generation: UInt64
 
 }
@@ -167,18 +168,22 @@ public extension OAuth {
                   isValidRegisteredRedirect(provider.redirectURI),
                   (provider.issuer == nil || isCanonicalIssuer(provider.issuer!)),
                   provider.issuer != nil || providers.allSatisfy({ candidate in
-                      candidate.id == provider.id ||
                       (candidate.authorizationURL.absoluteString == provider.authorizationURL.absoluteString &&
                        candidate.accessTokenURL.absoluteString == provider.accessTokenURL.absoluteString) ||
-                      !redirectURIsEquivalent(candidate.redirectURI, provider.redirectURI)
+                      !redirectTargetsOverlap(candidate.redirectURI, provider.redirectURI)
                   }) else {
                 state = .error(provider, .malformedURL)
                 return
             }
             let pkce = PKCE()
+            guard let authorizationURL = Request.auth(provider: provider, pkce: pkce)?.url else {
+                state = .error(provider, .malformedURL)
+                return
+            }
             pendingAuthorization = OAuthPendingAuthorization(
                 provider: provider,
                 pkce: pkce,
+                authorizationURL: authorizationURL,
                 generation: authorizationGeneration
             )
             state = .authorizing(provider, .authorizationCode)
@@ -192,6 +197,8 @@ public extension OAuth {
             }
         case .clientCredentials:
             supersedeTasks()
+            pendingAuthorization = nil
+            authorizationGeneration &+= 1
             guard provider.clientType == .confidential else {
                 return publish(state: .error(provider, .invalidClientConfiguration))
             }
@@ -206,8 +213,7 @@ public extension OAuth {
     }
 
     internal var activeAuthorizationURL: URL? {
-        guard let pendingAuthorization else { return nil }
-        return Request.auth(provider: pendingAuthorization.provider, pkce: pendingAuthorization.pkce)?.url
+        pendingAuthorization?.authorizationURL
     }
 
     internal var activeAuthorizationProvider: Provider? {
@@ -219,6 +225,9 @@ public extension OAuth {
     }
 
     internal func failDeviceAuthorization(provider: Provider) {
+        guard case .receivedDeviceCode(let activeProvider, _) = state,
+              activeProvider == provider else { return }
+        supersedeTasks()
         state = .error(provider, .badResponse)
     }
     internal func cancelAuthorization() {
@@ -247,15 +256,13 @@ public extension OAuth {
               let redirectItems = formQueryItems(redirect.percentEncodedQuery) else { return false }
         let provider = transaction.provider
         let pkce = transaction.pkce
-        let names = callbackItems.map(\.name)
         let stateItems = callbackItems.filter { $0.name == "state" }
         let codeItems = callbackItems.filter { $0.name == "code" }
         let errorItems = callbackItems.filter { $0.name == "error" }
         let issuerItems = callbackItems.filter { $0.name == "iss" }
         let hasCode = codeItems.count == 1 && codeItems[0].value?.isEmpty == false && errorItems.isEmpty
         let hasError = errorItems.count == 1 && errorItems[0].value?.isEmpty == false && codeItems.isEmpty
-        guard Set(names).count == names.count,
-              stateItems.count == 1,
+        guard stateItems.count == 1,
               stateItems[0].value == pkce.state,
               hasCode || hasError,
               issuerItems.count <= 1 else { return false }
@@ -325,19 +332,13 @@ public extension OAuth {
             right.user == nil && right.password == nil && right.fragment == nil
     }
 
-    private func redirectURIsEquivalent(_ lhs: String?, _ rhs: String?) -> Bool {
+    private func redirectTargetsOverlap(_ lhs: String?, _ rhs: String?) -> Bool {
         guard let lhs, let rhs,
               let left = URLComponents(string: lhs),
-              let right = URLComponents(string: rhs),
-              redirectComponentsMatch(left, right),
-              let leftItems = formQueryItems(left.percentEncodedQuery),
-              let rightItems = formQueryItems(right.percentEncodedQuery) else { return lhs == rhs }
-        guard leftItems.count == rightItems.count,
-              Set(leftItems.map(\.name)).count == leftItems.count,
-              Set(rightItems.map(\.name)).count == rightItems.count else { return false }
-        return leftItems.allSatisfy { item in
-            rightItems.first(where: { $0.name == item.name })?.value == item.value
-        }
+              let right = URLComponents(string: rhs) else { return lhs == rhs }
+        // Static query parameters cannot separate matchers: callbacks may carry
+        // additional unrecognized parameters, making subset queries overlap.
+        return redirectComponentsMatch(left, right)
     }
     private func isCanonicalIssuer(_ issuer: String) -> Bool {
         guard let components = URLComponents(string: issuer),

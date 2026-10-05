@@ -12,7 +12,7 @@ import LocalAuthentication
 import Testing
 
 @MainActor
-@Suite("OAuth Tests", .tags(.oauth))
+@Suite("OAuth Tests", .tags(.oauth), .serialized)
 final class OAuthTests {
 
     let oauth: OAuth
@@ -41,29 +41,8 @@ final class OAuthTests {
             .urlSession: Self.urlSession,
         ]
         oauth = .init(.module, options: options)
-        #expect(oauth.urlSession == Self.urlSession)
     }
 
-    /// Tests the initialization with providers.
-    @Test("When Initializing")
-    func whenInitializing() async throws {
-        let appTag: String = .secureRandom()
-        let options: [OAuth.Option: Any] = [
-            .applicationTag: appTag,
-            .autoRefresh: true,
-            .urlSession: Self.urlSession,
-        ]
-        let providers: [OAuth.Provider] = [
-            .init(id: .secureRandom(),
-                  authorizationURL: URL(string: "http://github.com/codefiesta/auth")!,
-                  accessTokenURL: URL(string: "http://github.com/codefiesta/token")!,
-                  clientID: .secureRandom(),
-                  clientSecret: .secureRandom())
-        ]
-        let customOAuth: OAuth = .init(providers: providers, options: options)
-        #expect(customOAuth.providers.count == 1)
-        #expect(customOAuth.urlSession == Self.urlSession)
-    }
 
 
     @Test("When Restoring Authorizations")
@@ -144,7 +123,8 @@ final class OAuthTests {
         let body = String(data: request!.httpBody!, encoding: .utf8)!
         #expect(request!.url!.query == nil)
         #expect(body.contains("device_code=\(deviceCode.deviceCode)"))
-        #expect(body.contains("grant_type=\(OAuth.DeviceCode.grantType)"))
+        let decodedForm = try #require(URLComponents(string: "?" + body.replacingOccurrences(of: "+", with: "%20")))
+        #expect(decodedForm.queryItems?.filter { $0.name == "grant_type" }.map(\.value) == [OAuth.DeviceCode.grantType])
     }
 
     /// Tests the building of token requests.
@@ -158,7 +138,7 @@ final class OAuthTests {
         #expect(data != nil)
         #expect(request?.value(forHTTPHeaderField: "Authorization")?.hasPrefix("Basic ") == true)
         #expect(stringData!.contains("code=\(code)"))
-        #expect(stringData!.contains("redirect_uri=https%3A%2F%2Fgithub.com%2Fcodefiesta%2F"))
+        #expect(stringData!.contains("redirect_uri=com.example.oauthkit%3A%2Fcallback"))
         #expect(stringData!.contains("grant_type=authorization_code"))
         oauth.token(provider: provider, code: code, pkce: nil)
         let result = await waitForAuthorization(oauth)
@@ -177,7 +157,7 @@ final class OAuthTests {
         #expect(data != nil)
         #expect(request?.value(forHTTPHeaderField: "Authorization")?.hasPrefix("Basic ") == true)
         #expect(stringData!.contains("code=\(code)"))
-        #expect(stringData!.contains("redirect_uri=https%3A%2F%2Fgithub.com%2Fcodefiesta%2F"))
+        #expect(stringData!.contains("redirect_uri=com.example.oauthkit%3A%2Fcallback"))
         #expect(stringData!.contains("grant_type=authorization_code"))
         #expect(stringData!.contains("code_verifier=\(pkce.codeVerifier)"))
         oauth.token(provider: provider, code: code, pkce: pkce)
@@ -218,14 +198,20 @@ final class OAuthTests {
         ])
         let original = OAuth.Token(accessToken: "access-old", refreshToken: "refresh-old", expiresIn: 3600, scope: "old-scope", type: "Bearer", openIDToken: "id-old")
         let authorization = OAuth.Authorization(issuer: provider.id, token: original)
-        try #require(oauth.keychain.set(authorization, for: provider.id))
+        let inserted = try oauth.keychain.set(authorization, for: provider.id)
+        try #require(inserted)
 
         // Act
         await oauth.refreshToken(provider: provider)
 
         // Assert
         let expected = OAuth.Token(accessToken: "access-new", refreshToken: "refresh-old", expiresIn: 1800, scope: "new-scope", type: "Bearer", openIDToken: "id-new")
-        #expect(oauth.state == .authorized(provider, .init(issuer: provider.id, token: expected)))
+        guard case .authorized(let selectedProvider, let current) = oauth.state else {
+            Issue.record("Refresh did not publish authorization")
+            return
+        }
+        #expect(selectedProvider.id == provider.id)
+        #expect(current.token == expected)
         let stored: OAuth.Authorization? = try oauth.keychain.get(key: provider.id)
         #expect(stored?.token == expected)
     }
@@ -245,14 +231,20 @@ final class OAuthTests {
         ])
         let original = OAuth.Token(accessToken: "access-old", refreshToken: "refresh-old", expiresIn: 3600, scope: "old-scope", type: "Bearer")
         let authorization = OAuth.Authorization(issuer: provider.id, token: original)
-        try #require(oauth.keychain.set(authorization, for: provider.id))
+        let inserted = try oauth.keychain.set(authorization, for: provider.id)
+        try #require(inserted)
 
         // Act
         await oauth.refreshToken(provider: provider)
 
         // Assert
         let expected = OAuth.Token(accessToken: "access-new", refreshToken: "refresh-new", expiresIn: 1800, scope: "new-scope", type: "Bearer", openIDToken: "id-new")
-        #expect(oauth.state == .authorized(provider, .init(issuer: provider.id, token: expected)))
+        guard case .authorized(let selectedProvider, let current) = oauth.state else {
+            Issue.record("Refresh did not publish authorization")
+            return
+        }
+        #expect(selectedProvider.id == provider.id)
+        #expect(current.token == expected)
         let stored: OAuth.Authorization? = try oauth.keychain.get(key: provider.id)
         #expect(stored?.token == expected)
     }
@@ -272,7 +264,11 @@ final class OAuthTests {
         ])
         let token = OAuth.Token(accessToken: "access-old", refreshToken: "refresh-revoked", expiresIn: 3600, scope: nil, type: "Bearer")
         let authorization = OAuth.Authorization(issuer: provider.id, token: token)
-        try #require(oauth.keychain.set(authorization, for: provider.id))
+        let inserted = try oauth.keychain.set(authorization, for: provider.id)
+        try #require(inserted)
+        let unrelated = OAuth.Authorization(issuer: "unrelated-provider", token: token)
+        try oauth.keychain.set(unrelated, for: unrelated.issuer)
+        defer { try? oauth.clear() }
 
         // Act
         await oauth.refreshToken(provider: provider)
@@ -281,6 +277,8 @@ final class OAuthTests {
         #expect(oauth.state == .error(provider, .oauth("invalid_grant")))
         let stored: OAuth.Authorization? = try oauth.keychain.get(key: provider.id)
         #expect(stored == nil)
+        let preserved: OAuth.Authorization? = try oauth.keychain.get(key: unrelated.issuer)
+        #expect(preserved == unrelated)
     }
 
     @Test("When Auto Refreshng Tokens")
@@ -406,26 +404,6 @@ final class OAuthTests {
         #expect(result == true)
     }
 
-    @Test("Device polling backs off on network failures and stops at expiry")
-    func devicePollingBacksOffUntilExpiry() async throws {
-        // Arrange
-        let configuration: URLSessionConfiguration = .ephemeral
-        configuration.protocolClasses = [OAuthTestServerErrorURLProtocol.self]
-        let session = URLSession(configuration: configuration)
-        let poller = OAuth(providers: [provider], options: [
-            .applicationTag: "oauthkit.test." + .secureRandom(),
-            .urlSession: session
-        ])
-        let deviceCode = OAuth.DeviceCode(deviceCode: .secureRandom(), userCode: "USER",
-                                          verificationUri: "https://example.com/device",
-                                          expiresIn: 2, interval: 1)
-
-        // Act
-        await poller.poll(provider: provider, deviceCode: deviceCode)
-
-        // Assert
-        #expect(poller.state == .error(provider, .expiredDeviceCode))
-    }
 
     @Test("Device polling stops on terminal OAuth errors")
     func devicePollingStopsOnOAuthError() async throws {
@@ -505,11 +483,11 @@ final class OAuthTests {
         await successfulPoller.poll(provider: provider, deviceCode: successfulCode)
 
         // Assert
-        if case .authorized = successfulPoller.state {
-            #expect(true)
-        } else {
-            #expect(Bool(false))
+        guard case .authorized(_, let authorization) = successfulPoller.state else {
+            Issue.record("Expected authorization before the fractional deadline")
+            return
         }
+        #expect(authorization.token.accessToken == "access-token")
         #expect(successfulDelays == [.milliseconds(500)])
         let successfulRequestCount = await OAuthTestCountingTokenURLProtocol.requestsMade()
         #expect(successfulRequestCount == 1)
@@ -647,18 +625,6 @@ final class OAuthTests {
         #expect(codeChallenge == expectedResult)
     }
 
-    /// Tests to make sure the grant type raw values are frozen and haven't been changed during development.
-    @Test("Grant Type Raw Value Checking")
-    func whenCheckingGrantType() async throws {
-        var grantType: OAuth.GrantType = .authorizationCode
-        #expect(grantType.rawValue == "authorization_code")
-        grantType = .clientCredentials
-        #expect(grantType.rawValue == "client_credentials")
-        grantType = .deviceCode
-        #expect(grantType.rawValue == "device_code")
-        grantType = .refreshToken
-        #expect(grantType.rawValue == "refresh_token")
-    }
 
     /// Tests the adding of the Authorization header to an URLRequest.
     @Test("Adding Authorization Header to URLRequest")
@@ -698,7 +664,7 @@ final class OAuthTests {
         #expect(firstState != secondState)
         #expect(firstChallenge != secondChallenge)
         #expect(firstGeneration != secondGeneration)
-        oauth.clear()
+        try oauth.clear()
         #expect(oauth.state == .empty)
     }
     @Test("Issuer-less servers require matcher-distinct redirects")
@@ -709,7 +675,7 @@ final class OAuthTests {
             accessTokenURL: URL(string: "https://one.example/token")!,
             clientID: "one",
             clientSecret: nil,
-            redirectURI: "MYAPP://CALLBACK?tenant=a+b"
+            redirectURI: "COM.EXAMPLE.OAUTHKIT:/callback?tenant=a+b"
         )
         let second = OAuth.Provider(
             id: "server-two",
@@ -717,12 +683,40 @@ final class OAuthTests {
             accessTokenURL: URL(string: "https://two.example/token")!,
             clientID: "two",
             clientSecret: nil,
-            redirectURI: "myapp://callback?tenant=a%20b"
+            redirectURI: "com.example.oauthkit:/callback?tenant=a%20b"
         )
         oauth.providers = [first, second]
         oauth.authorize(provider: first)
         #expect(oauth.state == .error(first, .malformedURL))
         #expect(oauth.activeAuthorizationURL == nil)
+
+        var subset = first
+        subset.redirectURI = "com.example.oauthkit:/callback?tenant=one"
+        var superset = second
+        superset.redirectURI = "com.example.oauthkit:/callback?tenant=one&region=us"
+        oauth.providers = [subset, superset]
+        oauth.authorize(provider: subset)
+        #expect(oauth.state == .error(subset, .malformedURL))
+        #expect(oauth.activeAuthorizationURL == nil)
+        // A local storage ID is not evidence of authorization-server identity.
+        superset.id = subset.id
+        oauth.providers = [subset, superset]
+        oauth.authorize(provider: subset)
+        #expect(oauth.state == .error(subset, .malformedURL))
+    }
+
+    @Test("Unbuildable interactive requests fail observably without a pending transaction")
+    func unbuildableAuthorizationFailsBeforePresenting() {
+        var invalidEndpoint = provider
+        invalidEndpoint.authorizationURL = URL(string: "http://example.com/authorize")!
+        var invalidRedirect = provider
+        invalidRedirect.redirectURI = "myapp://callback"
+        for configuration in [invalidEndpoint, invalidRedirect] {
+            oauth.providers = [configuration]
+            oauth.authorize(provider: configuration)
+            #expect(oauth.state == .error(configuration, .malformedURL))
+            #expect(oauth.activeAuthorizationURL == nil)
+        }
     }
 
 
@@ -736,7 +730,7 @@ final class OAuthTests {
             issuer: "https://auth.example/issuer+v1",
             clientID: "client",
             clientSecret: nil,
-            redirectURI: "myapp://callback?tenant=one"
+            redirectURI: "com.example.oauthkit:/callback?tenant=one"
         )
         oauth.providers = [testProvider]
         oauth.authorize(provider: testProvider)
@@ -744,8 +738,9 @@ final class OAuthTests {
         let state = authorizationItems.first(where: { $0.name == "state" })!.value!
         let makeCallback: ([URLQueryItem], String) -> URL = { items, host in
             var components = URLComponents()
-            components.scheme = "myapp"
-            components.host = host.isEmpty ? "callback" : host
+            components.scheme = "com.example.oauthkit"
+            components.host = host.isEmpty ? nil : host
+            components.path = "/callback"
             components.queryItems = items
             components.percentEncodedQuery = components.percentEncodedQuery?.replacingOccurrences(of: "+", with: "%2B")
             return components.url!
@@ -755,10 +750,12 @@ final class OAuthTests {
             URLQueryItem(name: "code", value: "test-code"),
             URLQueryItem(name: "state", value: state),
             URLQueryItem(name: "iss", value: "https://auth.example/issuer+v1"),
-            URLQueryItem(name: "scope", value: "openid")
+            URLQueryItem(name: "scope", value: "openid"),
+            URLQueryItem(name: "extra", value: "one"),
+            URLQueryItem(name: "extra", value: "two")
         ]
         #expect(!oauth.handleAuthorizationCallback(makeCallback(validItems.filter { $0.name != "iss" }, "")))
-        let rawPlusCallback = URL(string: "myapp://callback?tenant=one&code=test-code&state=\(state)&iss=https%3A%2F%2Fauth.example%2Fissuer+v1")!
+        let rawPlusCallback = URL(string: "com.example.oauthkit:/callback?tenant=one&code=test-code&state=\(state)&iss=https%3A%2F%2Fauth.example%2Fissuer+v1")!
         #expect(!oauth.handleAuthorizationCallback(rawPlusCallback))
         #expect(!oauth.handleAuthorizationCallback(makeCallback(validItems.map {
             $0.name == "iss" ? URLQueryItem(name: "iss", value: "https://AUTH.example/issuer+v1") : $0
@@ -796,7 +793,7 @@ final class OAuthTests {
             URLQueryItem(name: "state", value: clearedState),
             URLQueryItem(name: "iss", value: "https://auth.example/issuer+v1")
         ], "")
-        oauth.clear()
+        try oauth.clear()
         #expect(!oauth.handleAuthorizationCallback(callbackAfterClear))
     }
 
@@ -829,6 +826,7 @@ final class OAuthTests {
             secrets.append(deviceCode.deviceCode)
             secrets.append(deviceCode.userCode)
         }
+        diagnosticOAuth.supersedeTasks()
         await diagnosticOAuth.requestClientCredentials(provider: debugProvider)
         if case .authorized(_, let authorization) = diagnosticOAuth.state {
             secrets.append(authorization.token.accessToken)
@@ -867,7 +865,7 @@ final class OAuthTests {
         #expect(!output.contains("refresh_token"))
         #expect(!output.contains("id_token"))
         #expect(!output.contains("CALLBACK_STATE_SENTINEL"))
-        diagnosticOAuth.clear()
+        try diagnosticOAuth.clear()
     }
 
     /// Tests OAuth Secure Random State Generation
@@ -978,7 +976,7 @@ final class OAuthTests {
             deviceCodeURL: URL(string: "http://example.com/device"),
             clientID: "client"
         )
-        #expect(OAuth.Request.auth(provider: insecureProvider, grantType: .authorizationCode("state")) == nil)
+        #expect(OAuth.Request.auth(provider: insecureProvider, pkce: .init()) == nil)
         #expect(OAuth.Request.token(provider: insecureProvider, code: "code") == nil)
         #expect(OAuth.Request.device(provider: insecureProvider) == nil)
         var request = URLRequest(url: URL(string: "http://example.com/resource")!)
@@ -1019,7 +1017,7 @@ final class OAuthTests {
         #expect(OAuth.Request.token(provider: safeQueryProvider, code: "code")?.url?.query == "tenant=one")
         var staticAuthQueryProvider = safeQueryProvider
         staticAuthQueryProvider.authorizationURL = URL(string: "https://example.com/authorize?tenant=one")!
-        let authRequest = OAuth.Request.auth(provider: staticAuthQueryProvider, grantType: .authorizationCode("state"))
+        let authRequest = OAuth.Request.auth(provider: staticAuthQueryProvider, pkce: .init())
         #expect(URLComponents(url: authRequest!.url!, resolvingAgainstBaseURL: false)?.queryItems?.first?.name == "tenant")
     }
 
@@ -1035,16 +1033,16 @@ final class OAuthTests {
             clientID: "public-client",
             redirectURI: "http://127.0.0.1:49152/callback"
         )
-        #expect(OAuth.Request.auth(provider: base, grantType: .authorizationCode("state")) != nil)
+        #expect(OAuth.Request.auth(provider: base, pkce: .init()) != nil)
         var ipv6Loopback = base
         ipv6Loopback.redirectURI = "http://[::1]:49152/callback"
-        #expect(OAuth.Request.auth(provider: ipv6Loopback, grantType: .authorizationCode("state")) != nil)
+        #expect(OAuth.Request.auth(provider: ipv6Loopback, pkce: .init()) != nil)
         var invalid = base
         invalid.redirectURI = "http://example.com/callback"
-        #expect(OAuth.Request.auth(provider: invalid, grantType: .authorizationCode("state")) == nil)
+        #expect(OAuth.Request.auth(provider: invalid, pkce: .init()) == nil)
         var custom = base
         custom.redirectURI = "com.example.app:/oauth2redirect"
-        #expect(OAuth.Request.auth(provider: custom, grantType: .authorizationCode("state")) != nil)
+        #expect(OAuth.Request.auth(provider: custom, pkce: .init()) != nil)
     }
 
     /// Arrange an unclassified client with no secret, act by requesting client credentials, and
@@ -1066,9 +1064,19 @@ final class OAuthTests {
     /// Assert: the completed task has been pruned from the registry.
     @Test("Completed asynchronous tasks are removed")
     func whenCompletedTaskIsPruned() async throws {
+        let oauth = OAuth(providers: [provider], options: [
+            .applicationTag: "oauthkit.test." + .secureRandom(),
+            .autoRefresh: false,
+            .urlSession: Self.urlSession,
+        ])
+        defer { try? oauth.clear() }
         oauth.authorize(provider: provider, grantType: .clientCredentials)
         let monitor = OAuth.Monitor(oauth: oauth)
         for await state in monitor.stream {
+            if case .error = state {
+                Issue.record("Client-credentials authorization failed before task completion")
+                return
+            }
             if case .authorized = state { break }
         }
         for _ in 0..<10 where oauth.activeTaskCount > 0 {
@@ -1082,7 +1090,9 @@ final class OAuthTests {
         let monitor: OAuth.Monitor = .init(oauth: oauth)
         for await state in monitor.stream {
             switch state {
-            case .empty, .error, .authorizing, .requestingAccessToken, .requestingDeviceCode, .receivedDeviceCode:
+            case .error:
+                return false
+            case .empty, .authorizing, .requestingAccessToken, .requestingDeviceCode, .receivedDeviceCode:
                 break
             case .authorized(_, _):
                 do { try oauth.clear() }

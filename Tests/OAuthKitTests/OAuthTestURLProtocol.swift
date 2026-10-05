@@ -108,7 +108,7 @@ actor OAuthTestRequestHandler {
 }
 
 /// OAuth Test URL Protocol that intercepts test request and returns mocked response data.
-class OAuthTestURLProtocol: URLProtocol, @unchecked Sendable {
+class OAuthTestURLProtocol: URLProtocol {
 
     /// The handler responsible for returning mocked test response data
     var handler: OAuthTestRequestHandler {
@@ -127,19 +127,23 @@ class OAuthTestURLProtocol: URLProtocol, @unchecked Sendable {
 
     /// Starts loading the given request.
     override func startLoading() {
+        let handler = handler
+        let request = request
+        // Foundation response delivery crosses this fixture's actor boundary.
+        nonisolated(unsafe) let target: URLProtocol = self
         Task {
             // Client error
             guard handler.statusCode != 500 else {
-                client?.urlProtocol(self, didFailWithError: OAError.badResponse)
+                target.client?.urlProtocol(target, didFailWithError: OAError.badResponse)
                 return
             }
             do {
                 let (response, data) = try await handler.execute(request)
-                client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-                client?.urlProtocol(self, didLoad: data)
-                client?.urlProtocolDidFinishLoading(self)
+                target.client?.urlProtocol(target, didReceive: response, cacheStoragePolicy: .notAllowed)
+                target.client?.urlProtocol(target, didLoad: data)
+                target.client?.urlProtocolDidFinishLoading(target)
             } catch {
-                client?.urlProtocol(self, didFailWithError: error)
+                target.client?.urlProtocol(target, didFailWithError: error)
             }
         }
     }
@@ -149,7 +153,7 @@ class OAuthTestURLProtocol: URLProtocol, @unchecked Sendable {
 }
 
 /// An URLProtocol that returns 400 error response and empty data.
-class OAuthTestClientErrorURLProtocol: OAuthTestURLProtocol, @unchecked Sendable {
+class OAuthTestClientErrorURLProtocol: OAuthTestURLProtocol {
 
     override var handler: OAuthTestRequestHandler {
         .init(statusCode: statusCodeBadRequest)
@@ -157,7 +161,7 @@ class OAuthTestClientErrorURLProtocol: OAuthTestURLProtocol, @unchecked Sendable
 }
 
 /// An URLProtocol that returns 500 error responses and indicates that data has failed to load successfully.
-class OAuthTestServerErrorURLProtocol: OAuthTestURLProtocol, @unchecked Sendable {
+class OAuthTestServerErrorURLProtocol: OAuthTestURLProtocol {
 
     override var handler: OAuthTestRequestHandler {
         .init(statusCode: statusCodeServerError)
@@ -165,7 +169,7 @@ class OAuthTestServerErrorURLProtocol: OAuthTestURLProtocol, @unchecked Sendable
 }
 
 /// An URLProtocol that returns a terminal OAuth authorization error.
-class OAuthTestOAuthErrorURLProtocol: OAuthTestURLProtocol, @unchecked Sendable {
+class OAuthTestOAuthErrorURLProtocol: OAuthTestURLProtocol {
 
     override func startLoading() {
         let data = Data(#"{"error":"access_denied"}"#.utf8)
@@ -177,7 +181,7 @@ class OAuthTestOAuthErrorURLProtocol: OAuthTestURLProtocol, @unchecked Sendable 
 }
 
 /// An URLProtocol that returns pending, slow_down, pending, then a terminal error.
-class OAuthTestSlowDownURLProtocol: OAuthTestURLProtocol, @unchecked Sendable {
+class OAuthTestSlowDownURLProtocol: OAuthTestURLProtocol {
 
     private static let scriptedHandler = OAuthTestRequestHandler(
         statusCode: statusCodeBadRequest,
@@ -200,7 +204,7 @@ class OAuthTestSlowDownURLProtocol: OAuthTestURLProtocol, @unchecked Sendable {
 }
 
 /// An URLProtocol that times out once and then returns a terminal OAuth error.
-class OAuthTestTimedOutURLProtocol: OAuthTestURLProtocol, @unchecked Sendable {
+class OAuthTestTimedOutURLProtocol: OAuthTestURLProtocol {
 
     private static let scriptedHandler = OAuthTestRequestHandler(
         statusCode: statusCodeBadRequest,
@@ -223,7 +227,7 @@ class OAuthTestTimedOutURLProtocol: OAuthTestURLProtocol, @unchecked Sendable {
 
 
 /// Returns a successful token response and counts requests for deterministic tests.
-class OAuthTestCountingTokenURLProtocol: OAuthTestURLProtocol, @unchecked Sendable {
+class OAuthTestCountingTokenURLProtocol: OAuthTestURLProtocol {
 
     private static let scriptedHandler = OAuthTestRequestHandler(
         responseData: Data(#"{"access_token":"access-token","token_type":"Bearer"}"#.utf8))
@@ -242,7 +246,7 @@ class OAuthTestCountingTokenURLProtocol: OAuthTestURLProtocol, @unchecked Sendab
 }
 
 /// An URLProtocol that returns TLS failures and counts requests.
-class OAuthTestTLSFailureURLProtocol: OAuthTestURLProtocol, @unchecked Sendable {
+class OAuthTestTLSFailureURLProtocol: OAuthTestURLProtocol {
 
     private static let scriptedHandler = OAuthTestRequestHandler(
         responseSequence: [.failure(.secureConnectionFailed)])
@@ -306,17 +310,20 @@ private actor OAuthTestHeldResponseGate {
 }
 
 /// An URLProtocol that withholds a successful token response until released by the test.
-class OAuthTestHeldResponseURLProtocol: OAuthTestURLProtocol, @unchecked Sendable {
+final class OAuthTestHeldResponseURLProtocol: OAuthTestURLProtocol {
 
     private static let gate = OAuthTestHeldResponseGate()
 
     override func startLoading() {
+        // Only the immutable Foundation request/client target crosses the gate.
+        nonisolated(unsafe) let target: URLProtocol = self
+        let gate = Self.gate
         Task {
-            let data = await Self.gate.holdResponse()
-            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: httpVersion, headerFields: nil)!
-            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-            client?.urlProtocol(self, didLoad: data)
-            client?.urlProtocolDidFinishLoading(self)
+            let data = await gate.holdResponse()
+            let response = HTTPURLResponse(url: target.request.url!, statusCode: 200, httpVersion: httpVersion, headerFields: nil)!
+            target.client?.urlProtocol(target, didReceive: response, cacheStoragePolicy: .notAllowed)
+            target.client?.urlProtocol(target, didLoad: data)
+            target.client?.urlProtocolDidFinishLoading(target)
         }
     }
 
@@ -338,21 +345,21 @@ class OAuthTestHeldResponseURLProtocol: OAuthTestURLProtocol, @unchecked Sendabl
 }
 
 /// Returns a successful refresh response without a replacement refresh token.
-final class OAuthRefreshTokenOmittedURLProtocol: OAuthTestURLProtocol, @unchecked Sendable {
+final class OAuthRefreshTokenOmittedURLProtocol: OAuthTestURLProtocol {
     override var handler: OAuthTestRequestHandler {
         .init(responseData: Data(#"{"access_token":"access-new","expires_in":1800,"token_type":"Bearer","scope":"new-scope","id_token":"id-new"}"#.utf8))
     }
 }
 
 /// Returns a successful refresh response with a rotated refresh token.
-final class OAuthRefreshTokenRotatedURLProtocol: OAuthTestURLProtocol, @unchecked Sendable {
+final class OAuthRefreshTokenRotatedURLProtocol: OAuthTestURLProtocol {
     override var handler: OAuthTestRequestHandler {
         .init(responseData: Data(#"{"access_token":"access-new","refresh_token":"refresh-new","expires_in":1800,"token_type":"Bearer","scope":"new-scope","id_token":"id-new"}"#.utf8))
     }
 }
 
 /// Returns an invalid_grant error payload.
-final class OAuthInvalidGrantURLProtocol: OAuthTestURLProtocol, @unchecked Sendable {
+final class OAuthInvalidGrantURLProtocol: OAuthTestURLProtocol {
     override var handler: OAuthTestRequestHandler {
         .init(statusCode: statusCodeBadRequest, responseData: Data(#"{"error":"invalid_grant","error_description":"Refresh token was revoked"}"#.utf8))
     }

@@ -7,7 +7,7 @@ import Testing
 @MainActor
 private final class OAuthExternalAuthenticationSessionFake: OAuthExternalAuthenticationSession {
     var prefersEphemeralWebBrowserSession = false
-    var presentationContextProvider: (any ASWebAuthenticationPresentationContextProviding)?
+    weak var presentationContextProvider: (any ASWebAuthenticationPresentationContextProviding)?
     var started = false
     var cancelled = false
     var startResult = true
@@ -84,7 +84,7 @@ struct OAWebViewSessionTests {
         oauth.authorize(provider: provider)
         let first = OAuthExternalAuthenticationSessionFake()
         let second = OAuthExternalAuthenticationSessionFake()
-        var sessions = [first, second]
+        let sessions = [first, second]
         var index = 0
         let view = OAWebView(oauth: oauth, sessionFactory: { _, _, completion in
             let session = sessions[index]
@@ -193,7 +193,7 @@ struct OAWebViewSessionTests {
             accessTokenURL: URL(string: "https://auth.example/token")!,
             clientID: "test-client",
             clientSecret: nil,
-            redirectURI: "oauthkit-test://callback"
+            redirectURI: "com.example.oauthkit-test:/callback"
         )
     }
 

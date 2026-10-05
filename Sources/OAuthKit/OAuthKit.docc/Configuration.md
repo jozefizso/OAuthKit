@@ -63,23 +63,22 @@ Interactive credential entry uses ``ASWebAuthenticationSession`` and never an em
 **Assert:** Credentials are entered only in the trusted system surface; cancellation and view dismissal cancel the session and discard pending state. The session requests ephemeral cookies by default and requests persistence only when ``OAuth/Option/persistBrowserSession`` is explicitly true.
 
 ### Keychain Protection
-The ``OAuth/Option/requireBiometricAuthentication`` option protects each stored token item using the Keychain's biometric-current-set access-control policy. The system requires biometric authentication on each protected read, including token refreshes and reads by other OAuth instances; an initializer-only authentication check does not unlock items. Authentication cancellation, missing contexts, and unsupported biometrics fail closed. Existing items without Keychain access control are rejected while biometric protection is enabled. Items are bound to the currently enrolled biometric set and become unavailable if that set changes. Supply an ``OAuth/Option/localAuthentication`` context to control the system authentication prompt. On macOS, OAuthKit selects the data-protection Keychain for all operations; the host executable's entitlements and user-session context determine availability.
+The ``OAuth/Option/requireBiometricAuthentication`` option protects each stored token item using the Keychain's biometric-current-set access-control policy. The system requires biometric authentication on each protected read, including token refreshes and reads by other OAuth instances; an initializer-only authentication check does not unlock items. Authentication cancellation, missing contexts, and unsupported biometrics fail closed. Existing items without OAuthKit's biometric-policy marker and access control are rejected while biometric protection is enabled. Items are bound to the currently enrolled biometric set and become unavailable if that set changes. Supply an ``OAuth/Option/localAuthentication`` context to control the system authentication prompt. On macOS, OAuthKit selects the data-protection Keychain for all operations; the host executable's entitlements and user-session context determine availability.
 
 ```swift
 // Custom LAContext
 let localAuthentication: LAContext = .init()
 localAuthentication.localizedReason = "read tokens from keychain"
-localAuthentication.localizedFallbackTitle = "Use password"
 localAuthentication.touchIDAuthenticationAllowableReuseDuration = 10
 
 let options: [OAuth.Option: Any] = [
     .localAuthentication: localAuthentication,
-    .requireAuthenticationWithBiometricsOrCompanion: true
+    .requireBiometricAuthentication: true
 ]
 let oauth: OAuth = .init(.module, options: options)
 ```
 
-> Important: The ``OAuth/Option/requireAuthenticationWithBiometricsOrCompanion`` is only available on iOS, macOS, and visionOS.
+> Important: The ``OAuth/Option/requireBiometricAuthentication`` option is available only on iOS, macOS, and visionOS. It requires enrolled biometrics; a password or companion device cannot satisfy the item policy.
 
 > Tip: See ``OAuth/Option`` for a complete list of configuration options.
 

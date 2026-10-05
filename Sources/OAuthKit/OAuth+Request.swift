@@ -297,7 +297,8 @@ extension OAuth {
                   components.fragment == nil else { return false }
             if scheme == "https" { return true }
             if scheme == "http" {
-                return components.host == "127.0.0.1" || components.host == "::1"
+                return components.host == "127.0.0.1" ||
+                    components.host == "::1" || components.host == "[::1]"
             }
             return components.host == nil &&
                 scheme.contains(".") &&

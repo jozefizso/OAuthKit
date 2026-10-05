@@ -109,6 +109,33 @@ struct OAuthStorageFailureTests {
         #expect(client.state == .requestingDeviceCode(provider))
     }
 
+    @Test("Revoked refresh credentials remain observable when deletion fails")
+    func revokedRefreshReportsDeletionFailure() async throws {
+        let provider = makeProvider()
+        let namespace = "oauthkit.test.\(UUID().uuidString)"
+        let storage = Keychain.DefaultStorage(account: namespace, statusOverride: { operation in
+            operation == .delete ? errSecInteractionNotAllowed : nil
+        })
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [OAuthInvalidGrantURLProtocol.self]
+        let client = OAuth(providers: [], keychain: Keychain(storage: storage), options: [
+            .urlSession: URLSession(configuration: configuration),
+            .autoRefresh: false,
+        ])
+        let authorization = OAuth.Authorization(issuer: provider.id, token: .init(
+            accessToken: "old-access", refreshToken: "revoked-refresh",
+            expiresIn: 3600, scope: nil, type: "Bearer"
+        ))
+        try client.keychain.set(authorization, for: provider.id)
+        defer { try? Keychain(namespace).clear() }
+
+        await client.refreshToken(provider: provider)
+
+        #expect(client.state == .error(provider, .keychain))
+        let preserved: OAuth.Authorization? = try client.keychain.get(key: provider.id)
+        #expect(preserved == authorization)
+    }
+
     private func makeProvider() -> OAuth.Provider {
         OAuth.Provider(
             id: "protected-provider",

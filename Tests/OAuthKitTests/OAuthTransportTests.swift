@@ -87,7 +87,7 @@ private final class RedirectAttempts: @unchecked Sendable {
     }
 }
 
-private final class RedirectProtocol: URLProtocol, @unchecked Sendable {
+private final class RedirectProtocol: URLProtocol {
     static let attempts = RedirectAttempts()
 
     override class func canInit(with request: URLRequest) -> Bool {
