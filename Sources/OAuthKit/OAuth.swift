@@ -60,8 +60,13 @@ public final class OAuth: Sendable {
 
     #endif
 
+    private var tasks = [UUID: Task<Void, Never>]()
+
     @ObservationIgnored
-    private var tasks = [Task<(), any Error>]()
+    var generation: UInt64 = 0
+
+    @ObservationIgnored
+    var refreshTasks = [String: Task<Void, Never>]()
 
     @ObservationIgnored
     private let networkMonitor: NetworkMonitor = .shared
@@ -120,6 +125,7 @@ public extension OAuth {
     ///   - provider: the provider to begin authorization for
     ///   - grantType: the grant type to execute
     func authorize(provider: Provider, grantType: GrantType = .pkce(.init())) {
+        supersedeTasks()
         switch grantType {
         case .authorizationCode:
             state = .authorizing(provider, grantType)
@@ -159,8 +165,18 @@ public extension OAuth {
     /// Removes this client's stored tokens. State becomes empty only after confirmed deletion.
     /// - Throws: The storage error when deletion fails, leaving the current state unchanged.
     func clear() throws {
+        supersedeTasks()
         guard try keychain.clear() else { throw OAError.keychain }
         state = .empty
+    }
+
+    /// Invalidates asynchronous work started by an earlier authorization flow.
+    func supersedeTasks() {
+        generation &+= 1
+        for task in tasks.values { task.cancel() }
+        tasks.removeAll()
+        for task in refreshTasks.values { task.cancel() }
+        refreshTasks.removeAll()
     }
 }
 
@@ -274,12 +290,15 @@ private extension OAuth {
     ///   - provider: the oauth provider
     ///   - deviceCode: the device code issued by the provider
     func schedule(provider: Provider, deviceCode: DeviceCode) {
-        let timeInterval: TimeInterval = .init(deviceCode.interval)
-        let task = Task.delayed(timeInterval: timeInterval) { [weak self] in
-            guard let self else { return }
+        let timeInterval = TimeInterval(deviceCode.interval)
+        let id = UUID()
+        let handle = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(timeInterval))
+            guard let self, !Task.isCancelled else { return }
             await poll(provider: provider, deviceCode: deviceCode)
+            tasks.removeValue(forKey: id)
         }
-        tasks.append(task)
+        tasks[id] = handle
     }
 
     /// Schedules refresh tasks for the specified authorization.
@@ -295,11 +314,14 @@ private extension OAuth {
                 let timeInterval = expiration - Date.now
                 if timeInterval > 0 {
                     // Schedule the auto refresh task
-                    let task = Task.delayed(timeInterval: timeInterval) { [weak self] in
-                        guard let self else { return }
+                    let id = UUID()
+                    let task = Task { @MainActor [weak self] in
+                        try? await Task.sleep(for: .seconds(timeInterval))
+                        guard let self, !Task.isCancelled else { return }
                         await refreshToken(provider: provider)
+                        tasks.removeValue(forKey: id)
                     }
-                    tasks.append(task)
+                    tasks[id] = task
                 } else {
                     // Execute the task immediately
                     task { [self] in
@@ -313,19 +335,13 @@ private extension OAuth {
     /// Create and immediately start running a new detached task in the context of this actor.
     /// - Parameters:
     ///   - priority: the task priority
-    ///   - operation: the operation to be run immediately upon entering the task.
-    func task(priority: TaskPriority = .high, operation: sending @escaping @isolated(any) () async throws -> Void) {
-        if #available(macOS 26, iOS 26, watchOS 26, tvOS 26, visionOS 26, *) {
-            #if compiler(>=6.2)
-            // Swfit 6.2 compilers and above
-            Task.immediate(operation: operation)
-            #else
-            // Swift 6.1 compiler
-            Task(priority: priority, operation: operation)
-            #endif
-        } else {
-            Task(priority: priority, operation: operation)
+    func task(priority: TaskPriority = .high, operation: @escaping @MainActor () async -> Void) {
+        let id = UUID()
+        let handle = Task { @MainActor [weak self] in
+            await operation()
+            self?.tasks.removeValue(forKey: id)
         }
+        tasks[id] = handle
     }
 }
 
@@ -340,6 +356,7 @@ extension OAuth {
     ///   - code: the code to exchange
     ///   - pkce: the PKCE data to pass along with the request
     func requestToken(provider: Provider, code: String, pkce: PKCE? = nil) async {
+        let transaction = generation
         // Publish the state
         publish(state: .requestingAccessToken(provider))
 
@@ -350,6 +367,7 @@ extension OAuth {
         guard let (data, response) = try? await urlSession.data(for: request, delegate: OAuthRedirectDelegate.shared) else {
             return publish(state: .error(provider, .badResponse))
         }
+        guard transaction == generation, !Task.isCancelled else { return }
 
         if provider.debug {
             let statusCode = response.statusCode() ?? -1
@@ -376,6 +394,21 @@ extension OAuth {
     /// - Parameters:
     ///   - provider: the provider to request a refresh token for
     func refreshToken(provider: Provider) async {
+        let key = provider.id
+        if let active = refreshTasks[key] {
+            await active.value
+            return
+        }
+        let expectedGeneration = generation
+        let active = Task { @MainActor [weak self] in
+            await self?.performRefreshToken(provider: provider, expectedGeneration: expectedGeneration)
+        }
+        refreshTasks[key] = active
+        await active.value
+        refreshTasks.removeValue(forKey: key)
+    }
+
+    private func performRefreshToken(provider: Provider, expectedGeneration: UInt64) async {
         let storedAuthorization: Authorization?
         do {
             storedAuthorization = try keychain.get(key: provider.id)
@@ -397,6 +430,7 @@ extension OAuth {
         guard let (data, response) = try? await urlSession.data(for: request, delegate: OAuthRedirectDelegate.shared) else {
             return publish(state: .error(provider, .badResponse))
         }
+        guard expectedGeneration == generation, !Task.isCancelled else { return }
 
         if provider.debug {
             let statusCode = response.statusCode() ?? -1
@@ -421,12 +455,14 @@ extension OAuth {
     /// - Parameters:
     ///   - provider: the provider the device code is being requested from
     func requestDeviceCode(provider: Provider) async {
+        let transaction = generation
         guard let request = Request.device(provider: provider) else {
             return publish(state: .error(provider, .malformedURL))
         }
         guard let (data, response) = try? await urlSession.data(for: request, delegate: OAuthRedirectDelegate.shared) else {
             return publish(state: .error(provider, .badResponse))
         }
+        guard transaction == generation, !Task.isCancelled else { return }
 
         if provider.debug {
             let statusCode = response.statusCode() ?? -1
@@ -447,12 +483,14 @@ extension OAuth {
     /// - Parameters:
     ///   - provider: the provider the device code is being requested from
     func requestClientCredentials(provider: Provider) async {
+        let transaction = generation
         guard let request = Request.token(provider: provider) else {
             return publish(state: .error(provider, .invalidClientConfiguration))
         }
         guard let (data, response) = try? await urlSession.data(for: request, delegate: OAuthRedirectDelegate.shared) else {
             return publish(state: .error(provider, .badResponse))
         }
+        guard transaction == generation, !Task.isCancelled else { return }
 
         if provider.debug {
             let statusCode = response.statusCode() ?? -1
@@ -479,6 +517,7 @@ extension OAuth {
     ///   - provider: the provider to poll
     ///   - deviceCode: the device code to use
     func poll(provider: Provider, deviceCode: DeviceCode) async {
+        let transaction = generation
 
         guard !deviceCode.isExpired, let request = Request.token(provider: provider, deviceCode: deviceCode) else {
             return publish(state: .error(provider, .malformedURL))
@@ -487,6 +526,7 @@ extension OAuth {
         guard let (data, response) = try? await urlSession.data(for: request, delegate: OAuthRedirectDelegate.shared) else {
             return publish(state: .error(provider, .badResponse))
         }
+        guard transaction == generation, !Task.isCancelled else { return }
 
         if provider.debug {
             let statusCode = response.statusCode() ?? -1
