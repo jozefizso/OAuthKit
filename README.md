@@ -313,8 +313,15 @@ let grantType: OAuth.GrantType = .clientCredentials
 oauth.authorize(provider: provider, grantType: grantType)
 ```
 
-## OAuth 2.0 Provider Debugging
-Debugging output with [debugPrint(\_:separator:terminator:)](https://developer.apple.com/documentation/swift/debugprint(_:separator:terminator:)) into the standard output is disabled by default. If you need to inspect response data received from [providers](https://github.com/codefiesta/OAuthKit/blob/main/Sources/OAuthKit/OAuth+Provider.swift), you can toggle the `debug` value to true. You can see an [example here](https://github.com/codefiesta/OAuthKit/blob/main/Tests/OAuthKitTests/Resources/oauth.json).
+## OAuth 2.0 Provider Diagnostics
+Provider debugging is disabled by default. When enabled, diagnostics may include only the HTTP status and provider identifier. OAuth response bodies, callback URLs, authorization codes, states, verifier values, tokens, and secrets are never logged.
+
+### Arrange / Act / Assert: captured-log credential safety
+**Arrange:** Enable provider debugging, install a captured `debugPrint` output sink in the test harness, and configure a test response containing recognizable access-token, refresh-token, ID-token, device-code, authorization-code, and state sentinel values. Also prepare a callback URL containing code and state sentinels.
+
+**Act:** Exercise token, refresh, device-code, client-credentials, device-polling responses and process a successful callback plus a state-mismatch callback.
+
+**Assert:** The captured log contains only status and provider identifiers (and, for mismatch, a generic mismatch diagnostic). It contains none of the sentinels or any callback URL/query data. Repeat with provider debugging disabled and assert no diagnostics are emitted.
 
 ## OAuthKit Sample Application
 You can find a sample application integrated with OAuthKit [here](https://github.com/codefiesta/OAuthSample).

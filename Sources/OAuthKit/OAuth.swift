@@ -400,9 +400,7 @@ extension OAuth {
         guard transaction == generation, !Task.isCancelled else { return }
 
         if provider.debug {
-            let statusCode = response.statusCode() ?? -1
-            let rawData = String(data: data, encoding: .utf8) ?? .empty
-            debugPrint("Response: [\(statusCode))]", "Data: [\(rawData)]")
+            debugPrint("OAuth token response status: \(response.statusCode() ?? -1), provider: \(provider.id)")
         }
 
         // Decode the token
@@ -471,8 +469,7 @@ extension OAuth {
         guard expectedGeneration == generation, !Task.isCancelled else { return }
 
         if provider.debug {
-            let statusCode = response.statusCode() ?? -1
-            debugPrint("Response: [\(statusCode)]")
+            debugPrint("OAuth refresh response status: \(response.statusCode() ?? -1), provider: \(provider.id)")
         }
 
         guard response.isOK else {
@@ -526,9 +523,7 @@ extension OAuth {
         guard transaction == generation, !Task.isCancelled else { return }
 
         if provider.debug {
-            let statusCode = response.statusCode() ?? -1
-            let rawData = String(data: data, encoding: .utf8) ?? .empty
-            debugPrint("Response: [\(statusCode))]", "Data: [\(rawData)]")
+            debugPrint("OAuth device-code response status: \(response.statusCode() ?? -1), provider: \(provider.id)")
         }
 
         // Decode the device code
@@ -555,9 +550,7 @@ extension OAuth {
         guard transaction == generation, !Task.isCancelled else { return }
 
         if provider.debug {
-            let statusCode = response.statusCode() ?? -1
-            let rawData = String(data: data, encoding: .utf8) ?? .empty
-            debugPrint("Response: [\(statusCode))]", "Data: [\(rawData)]")
+            debugPrint("OAuth client-credentials response status: \(response.statusCode() ?? -1), provider: \(provider.id)")
         }
 
         // Decode the token

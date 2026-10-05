@@ -44,25 +44,20 @@ public class OAWebViewCoordinator: NSObject {
         switch grantType {
         case .authorizationCode(let authCodeState):
 
-            // Verify the state
             guard state == authCodeState else {
-                debugPrint("⚠️ State mismatch, expected [\(authCodeState)], received [\(state)]")
+                if provider.debug {
+                    debugPrint("OAuth callback state mismatch, provider: \(provider.id)")
+                }
                 return
-            }
-
-            if provider.debug {
-                debugPrint("➡️ [AuthorizationCode], [\(url.absoluteString)], [\(code)]")
             }
             // Exchange the code for a token
             oauth.token(provider: provider, code: code)
         case .pkce(let pkce):
-            // Verify the state
             guard state == pkce.state else {
-                debugPrint("⚠️ State mismatch, expected [\(pkce.state)], received [\(state)]")
+                if provider.debug {
+                    debugPrint("OAuth callback state mismatch, provider: \(provider.id)")
+                }
                 return
-            }
-            if provider.debug {
-                debugPrint("➡️ [PKCE], [\(url.absoluteString)], [\(code)]")
             }
             // Exchange the code for a token along with the pkce validation data
             oauth.token(provider: provider, code: code, pkce: pkce)
