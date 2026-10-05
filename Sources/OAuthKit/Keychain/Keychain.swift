@@ -24,6 +24,7 @@ class Keychain: @unchecked Sendable {
 
     static var `default`: Keychain { Keychain() }
     private let lock = NSLock()
+    private let coordinationIdentifier: String
     #if canImport(Security)
     /// Whether keychain values require item-level biometric authentication.
     var requiresAuthentication: Bool {
@@ -59,9 +60,11 @@ class Keychain: @unchecked Sendable {
     private let decoder = JSONDecoder()
     private var storage: Storage? = nil
 
+    var lifecycleNamespace: String { coordinationIdentifier }
     private init() {
+        coordinationIdentifier = Bundle.main.bundleIdentifier ?? "oauthkit"
         #if canImport(Security)
-        storage = DefaultStorage(account: Bundle.main.bundleIdentifier ?? "oauthkit")
+        storage = DefaultStorage(account: coordinationIdentifier)
         #endif
     }
 
@@ -69,6 +72,7 @@ class Keychain: @unchecked Sendable {
     /// - Parameter account: a key indicating the account owner. Ideally, use the application identifier for this value.
     public init(_ account: String) {
         assert(account.isNotEmpty, "❌ The account identifier cannot be empty.")
+        coordinationIdentifier = account
         #if canImport(Security)
         self.storage = DefaultStorage(account: account)
         #elseif os(Android)
@@ -80,6 +84,7 @@ class Keychain: @unchecked Sendable {
 
     /// Initializes the wrapper with a storage implementation at the Security boundary.
     init(storage: any Storage) {
+        coordinationIdentifier = storage.account
         self.storage = storage
     }
 

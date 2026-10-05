@@ -108,6 +108,57 @@ struct OAuthStorageFailureTests {
         }
         #expect(client.state == .requestingDeviceCode(provider))
     }
+    @Test("Failed clear preserves an authorized peer until namespace deletion succeeds")
+    func failedClearPreservesAuthorizedPeerState() throws {
+        // Arrange: both clients observe the same persisted authorization; one wrapper refuses deletion.
+        let provider = makeProvider()
+        let namespace = "oauthkit.test.\(UUID().uuidString)"
+        let writer = Keychain(namespace)
+        let authorization = OAuth.Authorization(
+            issuer: provider.id,
+            token: .init(accessToken: "peer-access", refreshToken: "peer-refresh", expiresIn: 3600, scope: nil, type: "Bearer")
+        )
+        try #require(try writer.set(authorization, for: provider.id))
+        defer { _ = try? writer.clear() }
+        let failingStorage = Keychain.DefaultStorage(account: namespace, statusOverride: { operation in
+            operation == .delete ? errSecInteractionNotAllowed : nil
+        })
+        let clearing = OAuth(
+            providers: [provider],
+            keychain: Keychain(storage: failingStorage),
+            options: [.autoRefresh: false]
+        )
+        let peer = OAuth(
+            providers: [provider],
+            keychain: Keychain(namespace),
+            options: [.autoRefresh: false]
+        )
+
+        let activePeer = OAuth(
+            providers: [],
+            keychain: Keychain(namespace),
+            options: [.autoRefresh: false]
+        )
+        activePeer.state = .requestingDeviceCode(provider)
+        #expect(clearing.state == .authorized(provider, authorization))
+        #expect(peer.state == .authorized(provider, authorization))
+
+        // Act: the initiating clear invalidates work but its Keychain deletion fails.
+        do {
+            try clearing.clear()
+            Issue.record("Deletion was expected to fail")
+        } catch KeychainError.securityStatus(let status) {
+            #expect(status == errSecInteractionNotAllowed)
+        }
+
+        // Assert: no peer falsely observes logout while the credential still exists.
+        #expect(clearing.state == .authorized(provider, authorization))
+        #expect(peer.state == .authorized(provider, authorization))
+        #expect(activePeer.state == .requestingDeviceCode(provider))
+        let stored: OAuth.Authorization? = try peer.keychain.get(key: provider.id)
+        #expect(stored == authorization)
+    }
+
 
     @Test("Revoked refresh credentials remain observable when deletion fails")
     func revokedRefreshReportsDeletionFailure() async throws {

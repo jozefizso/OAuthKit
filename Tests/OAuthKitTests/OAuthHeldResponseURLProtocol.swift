@@ -2,10 +2,12 @@ import Foundation
 
 actor OAuthHeldResponseGate {
     private(set) var requestCount = 0
-    private var requestWaiters: [CheckedContinuation<Void, Never>] = []
-    private var responseWaiters: [CheckedContinuation<Data, Never>] = []
-    private var releasedResponse: Data?
+    private var responseWaiters: [CheckedContinuation<(Data, Int)?, Never>] = []
+    private var releasedResponse: (Data, Int)?
+    private var cancelled = false
 
+    private var ignoresCancellation = false
+    private var requestWaiters: [CheckedContinuation<Void, Never>] = []
     func waitForRequest() async {
         guard requestCount == 0 else { return }
         await withCheckedContinuation { requestWaiters.append($0) }
@@ -13,17 +15,30 @@ actor OAuthHeldResponseGate {
 
     func release(withAccessToken accessToken: String, refreshToken: String = "refresh-token") {
         let body = "{\"access_token\":\"\(accessToken)\",\"refresh_token\":\"\(refreshToken)\",\"expires_in\":3600,\"token_type\":\"Bearer\"}"
-        let data = Data(body.utf8)
-        releasedResponse = data
+        release(response: Data(body.utf8), statusCode: 200)
+    }
+    func release(response data: Data, statusCode: Int) {
+        releasedResponse = (data, statusCode)
         let waiters = responseWaiters
         responseWaiters.removeAll()
-        for waiter in waiters { waiter.resume(returning: data) }
+        for waiter in waiters { waiter.resume(returning: (data, statusCode)) }
     }
-    func responseForRequest() async -> Data {
+    func ignoreCancellation() {
+        ignoresCancellation = true
+    }
+    func cancel() {
+        guard !ignoresCancellation else { return }
+        cancelled = true
+        let waiters = responseWaiters
+        responseWaiters.removeAll()
+        for waiter in waiters { waiter.resume(returning: nil) }
+    }
+    func responseForRequest() async -> (Data, Int)? {
         requestCount += 1
         let waiters = requestWaiters
         requestWaiters.removeAll()
         for waiter in waiters { waiter.resume() }
+        if cancelled { return nil }
         if let releasedResponse { return releasedResponse }
         return await withCheckedContinuation { responseWaiters.append($0) }
     }
@@ -71,15 +86,21 @@ final class OAuthHeldResponseURLProtocol: URLProtocol {
         let url = request.url
         nonisolated(unsafe) let target: URLProtocol = self
         Task {
-            guard let gate = await OAuthHeldResponseRegistry.gate(for: host) else { return }
-            let data = await gate.responseForRequest()
+            guard let gate = await OAuthHeldResponseRegistry.gate(for: host),
+                  let (data, statusCode) = await gate.responseForRequest() else { return }
             guard let url,
-                  let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "application/json"]) else { return }
+                  let response = HTTPURLResponse(url: url, statusCode: statusCode, httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "application/json"]) else { return }
             target.client?.urlProtocol(target, didReceive: response, cacheStoragePolicy: .notAllowed)
             target.client?.urlProtocol(target, didLoad: data)
             target.client?.urlProtocolDidFinishLoading(target)
         }
     }
 
-    override func stopLoading() {}
+    override func stopLoading() {
+        let host = request.url?.host
+        Task {
+            guard let gate = await OAuthHeldResponseRegistry.gate(for: host) else { return }
+            await gate.cancel()
+        }
+    }
 }

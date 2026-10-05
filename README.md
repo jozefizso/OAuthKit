@@ -23,7 +23,7 @@ Key features include:
 
 - [Simple Configuration](#oauthkit-configuration)
 - [Item-level biometric Keychain protection](https://codefiesta.github.io/OAuthKit/documentation/oauthkit/configuration#Keychain-Protection)
-- [Private Browsing with non-persistent WebKit Datastores](https://codefiesta.github.io/OAuthKit/documentation/oauthkit/configuration#Private-Browsing)
+- [Ephemeral system browser sessions](https://codefiesta.github.io/OAuthKit/documentation/oauthkit/configuration#Private-Browsing)
 - [Custom URLSession](https://codefiesta.github.io/OAuthKit/documentation/oauthkit/configuration#URL-Session) configuration for complete control custom protocol specific data
 - [Observable State](https://codefiesta.github.io/OAuthKit/documentation/oauthkit/gettingstarted#Observing-OAuth-State) driven events to allow full control over when and if users are prompted to authenticate with an OAuth provider
 - Supports all Apple Platforms (iOS, macOS, tvOS, visionOS, watchOS)
@@ -199,6 +199,12 @@ Keychain records are isolated by the exact `.applicationTag` service namespace;
 use a distinct tag for each independent application or environment. `clear()`
 throws if storage deletion fails and publishes `.empty` only after confirmed
 deletion. Handle that error rather than telling the user logout succeeded.
+
+Instances sharing the same Keychain namespace coordinate provider flow generations
+and refresh requests. Each refresh participant performs its own protected
+credential read; the shared request never bypasses biometric authentication.
+Clearing that namespace cancels pending work and browser transactions in every
+participant. Observable authorization is retained if deletion fails.
 
 ### OAuth initialized with custom URLSession
 A custom `.urlSession` can install `URLProtocol` handlers for application-specific

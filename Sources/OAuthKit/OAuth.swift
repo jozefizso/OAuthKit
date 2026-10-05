@@ -67,15 +67,16 @@ public final class OAuth: Sendable {
 
     #endif
 
-    private var tasks = [UUID: Task<Void, Never>]()
+    @ObservationIgnored
+    private var tasks = [UUID: OAuthTaskEntry]()
 
     @ObservationIgnored
     var generation: UInt64 = 0
+    @ObservationIgnored
+    private var providerGenerations = [String: UInt64]()
 
     @ObservationIgnored
-    var refreshTasks = [String: Task<Void, Never>]()
-    @ObservationIgnored
-    private var refreshIDs = [String: UUID]()
+    private var lifecycleCoordinator = OAuthLifecycleCoordinator.coordinator(for: Keychain.default.lifecycleNamespace)
 
     @ObservationIgnored
     private let networkMonitor: NetworkMonitor = .shared
@@ -143,7 +144,12 @@ private struct OAuthPendingAuthorization {
     let pkce: OAuth.PKCE
     let authorizationURL: URL
     let generation: UInt64
+    let lifecycleTicket: OAuthLifecycleTicket
 
+}
+private struct OAuthTaskEntry {
+    let providerID: String
+    let task: Task<Void, Never>
 }
 public extension OAuth {
 
@@ -161,7 +167,7 @@ public extension OAuth {
     func authorize(provider: Provider, grantType: GrantType = .authorizationCode) {
         switch grantType {
         case .authorizationCode:
-            supersedeTasks()
+            supersedeTasks(providerID: provider.id)
             pendingAuthorization = nil
             authorizationGeneration &+= 1
             guard provider.redirectURI != nil,
@@ -184,29 +190,30 @@ public extension OAuth {
                 provider: provider,
                 pkce: pkce,
                 authorizationURL: authorizationURL,
-                generation: authorizationGeneration
+                generation: authorizationGeneration,
+                lifecycleTicket: lifecycleTicket(for: provider.id)
             )
             state = .authorizing(provider, .authorizationCode)
         case .deviceCode:
-            supersedeTasks()
+            supersedeTasks(providerID: provider.id)
             pendingAuthorization = nil
             authorizationGeneration &+= 1
             state = .requestingDeviceCode(provider)
-            task { [self] in
+            task(providerID: provider.id) { [self] in
                 await requestDeviceCode(provider: provider)
             }
         case .clientCredentials:
-            supersedeTasks()
+            supersedeTasks(providerID: provider.id)
             pendingAuthorization = nil
             authorizationGeneration &+= 1
             guard provider.clientType == .confidential else {
                 return publish(state: .error(provider, .invalidClientConfiguration))
             }
-            task { [self] in
+            task(providerID: provider.id) { [self] in
                 await requestClientCredentials(provider: provider)
             }
         case .refreshToken:
-            task { [self] in
+            task(providerID: provider.id) { [self] in
                 await refreshToken(provider: provider)
             }
         }
@@ -227,7 +234,7 @@ public extension OAuth {
     internal func failDeviceAuthorization(provider: Provider) {
         guard case .receivedDeviceCode(let activeProvider, _) = state,
               activeProvider == provider else { return }
-        supersedeTasks()
+        supersedeTasks(providerID: provider.id)
         state = .error(provider, .badResponse)
     }
     internal func cancelAuthorization() {
@@ -236,10 +243,10 @@ public extension OAuth {
     }
 
     internal func cancelAuthorization(generation: UInt64) {
-        guard pendingAuthorization?.generation == generation else { return }
+        guard let transaction = pendingAuthorization, transaction.generation == generation else { return }
         pendingAuthorization = nil
         authorizationGeneration &+= 1
-        supersedeTasks()
+        supersedeTasks(providerID: transaction.provider.id)
         state = .empty
     }
 
@@ -247,6 +254,7 @@ public extension OAuth {
     @discardableResult
     func handleAuthorizationCallback(_ url: URL, generation: UInt64? = nil) -> Bool {
         guard let transaction = pendingAuthorization,
+              isCurrent(transaction.lifecycleTicket, for: transaction.provider.id),
               generation == nil || generation == transaction.generation,
               let redirectURI = transaction.provider.redirectURI,
               let redirect = URLComponents(string: redirectURI),
@@ -275,11 +283,11 @@ public extension OAuth {
             let matches = callbackItems.filter { $0.name == item.name }
             guard matches.count == 1, matches[0].value == item.value else { return false }
         }
-        supersedeTasks()
+        supersedeTasks(providerID: provider.id)
         pendingAuthorization = nil
         if hasCode, let code = codeItems.first?.value {
             state = .requestingAccessToken(provider)
-            task { [self] in
+            task(providerID: provider.id) { [self] in
                 await requestToken(provider: provider, code: code, pkce: pkce)
             }
         } else {
@@ -362,7 +370,7 @@ public extension OAuth {
     ///   - code: the code to exchange
     ///   - pkce: the pkce data
     internal func token(provider: Provider, code: String, pkce: PKCE? = nil) {
-        task { [self] in
+        task(providerID: provider.id) { [self] in
             await requestToken(provider: provider, code: code, pkce: pkce)
         }
     }
@@ -374,6 +382,7 @@ public extension OAuth {
         authorizationGeneration &+= 1
         supersedeTasks()
         guard try keychain.clear() else { throw OAError.keychain }
+        lifecycleCoordinator.credentialsDidClear(excluding: ObjectIdentifier(self))
         state = .empty
     }
 
@@ -381,15 +390,60 @@ public extension OAuth {
 
 extension OAuth {
     /// Invalidates asynchronous work started by an earlier authorization flow.
-    func supersedeTasks() {
+    func supersedeTasks(providerID: String? = nil) {
         generation &+= 1
-        for task in tasks.values { task.cancel() }
+        if let providerID {
+            providerGenerations[providerID, default: 0] &+= 1
+        }
+        for entry in tasks.values { entry.task.cancel() }
         tasks.removeAll()
-        for task in refreshTasks.values { task.cancel() }
-        refreshTasks.removeAll()
-        refreshIDs.removeAll()
+        let ownerID = ObjectIdentifier(self)
+        lifecycleCoordinator.invalidateOwnedWork(ownerID: ownerID)
+        lifecycleCoordinator.invalidate(providerID: providerID, excluding: ownerID)
     }
     var activeTaskCount: Int { tasks.count }
+}
+extension OAuth: OAuthLifecycleParticipant {
+    func lifecycleDidInvalidate(providerID: String?) {
+        if providerID == nil {
+            generation &+= 1
+            authorizationGeneration &+= 1
+            pendingAuthorization = nil
+            for entry in tasks.values { entry.task.cancel() }
+            return
+        }
+        let pendingMatches = pendingAuthorization.map {
+            providerID == nil || $0.provider.id == providerID
+        } ?? false
+        let activeProviderID: String?
+        switch state {
+        case .authorizing(let provider, _),
+             .requestingAccessToken(let provider),
+             .requestingDeviceCode(let provider),
+             .receivedDeviceCode(let provider, _):
+            activeProviderID = provider.id
+        case .empty, .authorized(_, _), .error(_, _):
+            activeProviderID = nil
+        }
+        let activeMatches = activeProviderID.map {
+            providerID == nil || $0 == providerID
+        } ?? false
+        guard pendingMatches || activeMatches else { return }
+
+        if pendingMatches {
+            pendingAuthorization = nil
+            authorizationGeneration &+= 1
+        }
+        state = .empty
+    }
+
+    func lifecycleCredentialsDidClear() {
+        if pendingAuthorization != nil {
+            pendingAuthorization = nil
+            authorizationGeneration &+= 1
+        }
+        state = .empty
+    }
 }
 
 // MARK: Private
@@ -454,6 +508,12 @@ private extension OAuth {
                 self.keychain = .init(applicationTag)
             }
         }
+        let coordinator = OAuthLifecycleCoordinator.coordinator(for: keychain.lifecycleNamespace)
+        if coordinator !== lifecycleCoordinator {
+            lifecycleCoordinator.unregister(self)
+            lifecycleCoordinator = coordinator
+        }
+        lifecycleCoordinator.register(self)
         #if canImport(Security)
         keychain.requiresAuthentication = options?[.requireBiometricAuthentication] as? Bool ?? false
         #if os(macOS) || os(iOS) || os(visionOS)
@@ -501,13 +561,9 @@ private extension OAuth {
     ///   - provider: the oauth provider
     ///   - deviceCode: the device code issued by the provider
     func schedule(provider: Provider, deviceCode: DeviceCode) {
-        let id = UUID()
-        let handle = Task { @MainActor [weak self] in
-            guard let self, !Task.isCancelled else { return }
+        task(providerID: provider.id) { [self] in
             await poll(provider: provider, deviceCode: deviceCode)
-            tasks.removeValue(forKey: id)
         }
-        tasks[id] = handle
     }
 
     /// Schedules refresh tasks for the specified authorization.
@@ -523,17 +579,12 @@ private extension OAuth {
                 let timeInterval = expiration - Date.now
                 if timeInterval > 0 {
                     // Schedule the auto refresh task
-                    let id = UUID()
-                    let task = Task { @MainActor [weak self] in
-                        try? await Task.sleep(for: .seconds(timeInterval))
-                        guard let self, !Task.isCancelled else { return }
-                        await refreshToken(provider: provider)
-                        tasks.removeValue(forKey: id)
+                    delayedTask(providerID: provider.id, delay: .seconds(timeInterval)) { owner in
+                        await owner.refreshToken(provider: provider)
                     }
-                    tasks[id] = task
                 } else {
                     // Execute the task immediately
-                    task { [self] in
+                    task(providerID: provider.id) { [self] in
                         await refreshToken(provider: provider)
                     }
                 }
@@ -545,16 +596,71 @@ private extension OAuth {
     /// - Parameters:
     ///   - priority: the task priority
     ///   - operation: the main-actor operation to run.
-    func task(priority: TaskPriority = .high, operation: @escaping @MainActor () async -> Void) {
+    func task(
+        providerID: String,
+        priority: TaskPriority = .high,
+        operation: @escaping @MainActor () async -> Void
+    ) {
         let id = UUID()
-        let taskGeneration = generation
-        let handle = Task(priority: priority) { @MainActor [weak self] in
-            guard let self, generation == taskGeneration, !Task.isCancelled else { return }
+        let ticket = lifecycleTicket(for: providerID)
+        let coordinator = lifecycleCoordinator
+        let handle = Task(priority: priority) { @MainActor [weak owner = self, coordinator] in
+            defer {
+                owner?.tasks.removeValue(forKey: id)
+                coordinator.finishedTask(id: id)
+            }
+            guard let owner,
+                  owner.isCurrent(ticket, for: providerID),
+                  !Task.isCancelled else { return }
             await operation()
-            tasks.removeValue(forKey: id)
         }
-        tasks[id] = handle
+        tasks[id] = OAuthTaskEntry(providerID: providerID, task: handle)
+        coordinator.retain(handle, id: id, providerID: providerID, ownerID: ObjectIdentifier(self))
     }
+
+    func delayedTask(
+        providerID: String,
+        delay: Duration,
+        operation: @escaping @MainActor (OAuth) async -> Void
+    ) {
+        let id = UUID()
+        let ticket = lifecycleTicket(for: providerID)
+        let coordinator = lifecycleCoordinator
+        let handle = Task { @MainActor [weak owner = self, coordinator] in
+            defer {
+                owner?.tasks.removeValue(forKey: id)
+                coordinator.finishedTask(id: id)
+            }
+            do {
+                try await Task.sleep(for: delay)
+            } catch {
+                return
+            }
+            guard let owner,
+                  owner.isCurrent(ticket, for: providerID),
+                  !Task.isCancelled else { return }
+            await operation(owner)
+        }
+        tasks[id] = OAuthTaskEntry(providerID: providerID, task: handle)
+        coordinator.retain(handle, id: id, providerID: providerID, ownerID: ObjectIdentifier(self))
+    }
+
+    func lifecycleTicket(for providerID: String) -> OAuthLifecycleTicket {
+        lifecycleCoordinator.ticket(
+            for: providerID,
+            instanceGeneration: generation,
+            instanceProviderGeneration: providerGenerations[providerID, default: 0]
+        )
+    }
+
+    func isCurrent(_ ticket: OAuthLifecycleTicket, for providerID: String) -> Bool {
+        lifecycleCoordinator.isCurrent(
+            ticket,
+            for: providerID,
+            instanceGeneration: generation,
+            instanceProviderGeneration: providerGenerations[providerID, default: 0]
+        )
+}
 }
 
 // MARK: URLRequests
@@ -568,7 +674,7 @@ extension OAuth {
     ///   - code: the code to exchange
     ///   - pkce: the PKCE data to pass along with the request
     func requestToken(provider: Provider, code: String, pkce: PKCE? = nil) async {
-        let transaction = generation
+        let transaction = lifecycleTicket(for: provider.id)
         // Publish the state
         publish(state: .requestingAccessToken(provider))
 
@@ -577,10 +683,10 @@ extension OAuth {
         }
 
         guard let (data, response) = try? await urlSession.data(for: request, delegate: OAuthRedirectDelegate.shared) else {
-            guard transaction == generation, !Task.isCancelled else { return }
+            guard isCurrent(transaction, for: provider.id), !Task.isCancelled else { return }
             return publish(state: .error(provider, .badResponse))
         }
-        guard transaction == generation, !Task.isCancelled else { return }
+        guard isCurrent(transaction, for: provider.id), !Task.isCancelled else { return }
 
         logResponse("token", response: response, provider: provider)
 
@@ -604,71 +710,113 @@ extension OAuth {
     ///   - provider: the provider to request a refresh token for
     func refreshToken(provider: Provider) async {
         let key = provider.id
-        if let active = refreshTasks[key] {
-            await active.value
-            return
-        }
-        let id = UUID()
-        let expectedGeneration = generation
-        refreshIDs[key] = id
-        let active = Task<Void, Never> { @MainActor [weak self] in
-            guard let self, generation == expectedGeneration, !Task.isCancelled else { return }
-            await performRefreshToken(provider: provider, expectedGeneration: expectedGeneration)
-        }
-        refreshTasks[key] = active
-        await active.value
-        if refreshIDs[key] == id {
-            refreshIDs.removeValue(forKey: key)
-            refreshTasks.removeValue(forKey: key)
-        }
-    }
+        let ticket = lifecycleTicket(for: key)
+        guard isCurrent(ticket, for: key), !Task.isCancelled else { return }
 
-    private func performRefreshToken(provider: Provider, expectedGeneration: UInt64) async {
-        guard expectedGeneration == generation, !Task.isCancelled else { return }
-        let storedAuthorization: Authorization?
+        // Each OAuth instance must pass its own protected read gate before joining.
+        let auth: Authorization
         do {
-            storedAuthorization = try keychain.get(key: provider.id)
+            guard let stored: Authorization = try keychain.get(key: key) else { return }
+            auth = stored
         } catch {
             return publish(state: .error(provider, .keychain))
         }
-        guard let auth = storedAuthorization else { return }
+        guard isCurrent(ticket, for: key), !Task.isCancelled else { return }
 
-        // If we can't build a refresh request simply bail as no refresh token
-        // was returned in the original auth request
-        guard let request = Request.refresh(provider: provider, token: auth.token) else {
-            if auth.isExpired {
-                do { try clear() }
-                catch { publish(state: .error(provider, .keychain)) }
+        let outcome: OAuthRefreshOutcome
+        if let flight = lifecycleCoordinator.joinRefreshFlight(for: key) {
+            outcome = await flight.task.value
+        } else {
+            let id = UUID()
+            let ownerID = ObjectIdentifier(self)
+            let flight = Task<OAuthRefreshOutcome, Never> { @MainActor [weak self] in
+                guard let self, isCurrent(ticket, for: key), !Task.isCancelled else { return .cancelled }
+                return await performRefreshToken(provider: provider, auth: auth, ticket: ticket)
             }
+            lifecycleCoordinator.retainRefresh(flight, id: id, providerID: key, ownerID: ownerID)
+            outcome = await flight.value
+            lifecycleCoordinator.finishRefresh(id: id, providerID: key)
+        }
+
+        guard isCurrent(ticket, for: key), !Task.isCancelled else { return }
+        await publishRefreshOutcome(outcome, provider: provider, ticket: ticket)
+    }
+
+    private func publishRefreshOutcome(
+        _ outcome: OAuthRefreshOutcome,
+        provider: Provider,
+        ticket: OAuthLifecycleTicket
+    ) async {
+        let key = provider.id
+        guard isCurrent(ticket, for: key), !Task.isCancelled else { return }
+        switch outcome {
+        case .success:
+            do {
+                guard let refreshed: Authorization = try keychain.get(key: key) else {
+                    return publish(state: .error(provider, .keychain))
+                }
+                guard isCurrent(ticket, for: key), !Task.isCancelled else { return }
+                publish(state: .authorized(provider, refreshed))
+            } catch {
+                publish(state: .error(provider, .keychain))
+            }
+        case .failure(let error):
+            publish(state: .error(provider, error))
+        case .cleared:
+            publish(state: .empty)
+        case .unchanged:
             return
+        case .cancelled:
+            publish(state: .error(provider, .badResponse))
+        }
+    }
+
+    private func performRefreshToken(
+        provider: Provider,
+        auth: Authorization,
+        ticket: OAuthLifecycleTicket
+    ) async -> OAuthRefreshOutcome {
+        let key = provider.id
+        guard isCurrent(ticket, for: key), !Task.isCancelled else { return .cancelled }
+
+        guard auth.token.refreshToken != nil else {
+            guard auth.isExpired else { return .unchanged }
+            do {
+                guard try keychain.delete(key: key) else { return .failure(.keychain) }
+                guard isCurrent(ticket, for: key), !Task.isCancelled else { return .cancelled }
+                return .cleared
+            } catch {
+                return .failure(.keychain)
+            }
+        }
+
+        guard let request = Request.refresh(provider: provider, token: auth.token) else {
+            return .failure(.invalidClientConfiguration)
         }
 
         guard let (data, response) = try? await urlSession.data(for: request, delegate: OAuthRedirectDelegate.shared) else {
-            guard expectedGeneration == generation, !Task.isCancelled else { return }
-            return publish(state: .error(provider, .badResponse))
+            guard isCurrent(ticket, for: key), !Task.isCancelled else { return .cancelled }
+            return .failure(.badResponse)
         }
-        guard expectedGeneration == generation, !Task.isCancelled else { return }
-
+        guard isCurrent(ticket, for: key), !Task.isCancelled else { return .cancelled }
         logResponse("refresh", response: response, provider: provider)
 
         guard response.isOK else {
-            if let error = try? decoder.decode(OAuthErrorResponse.self, from: data) {
-                if error.error == "invalid_grant" {
-                    do {
-                        try keychain.delete(key: provider.id)
-                    } catch {
-                        return publish(state: .error(provider, .keychain))
-                    }
-                }
-                return publish(state: .error(provider, .oauth(error.error)))
+            guard let error = try? decoder.decode(OAuthErrorResponse.self, from: data) else {
+                return .failure(.decoding)
             }
-            return publish(state: .error(provider, .decoding))
+            if error.error == "invalid_grant" {
+                do {
+                    guard try keychain.delete(key: key) else { return .failure(.keychain) }
+                } catch {
+                    return .failure(.keychain)
+                }
+            }
+            return .failure(.oauth(error.error))
         }
 
-        // Decode the token and retain the current refresh token when the server
-        // does not rotate it.
         guard let responseToken = try? decoder.decode(Token.self, from: data) else {
-            return publish(state: .error(provider, .decoding))
+            return .failure(.decoding)
         }
         let token = Token(
             accessToken: responseToken.accessToken,
@@ -678,28 +826,26 @@ extension OAuth {
             type: responseToken.type,
             openIDToken: responseToken.openIDToken
         )
-
-        // Store the authorization
         let authorization = Authorization(issuer: provider.id, token: token)
         guard let stored = try? keychain.set(authorization, for: authorization.issuer), stored else {
-            return publish(state: .error(provider, .keychain))
+            return .failure(.keychain)
         }
-        publish(state: .authorized(provider, authorization))
+        return .success
     }
 
     /// Requests a device code from the specified provider.
     /// - Parameters:
     ///   - provider: the provider the device code is being requested from
     func requestDeviceCode(provider: Provider) async {
-        let transaction = generation
+        let transaction = lifecycleTicket(for: provider.id)
         guard let request = Request.device(provider: provider) else {
             return publish(state: .error(provider, .malformedURL))
         }
         guard let (data, response) = try? await urlSession.data(for: request, delegate: OAuthRedirectDelegate.shared) else {
-            guard transaction == generation, !Task.isCancelled else { return }
+            guard isCurrent(transaction, for: provider.id), !Task.isCancelled else { return }
             return publish(state: .error(provider, .badResponse))
         }
-        guard transaction == generation, !Task.isCancelled else { return }
+        guard isCurrent(transaction, for: provider.id), !Task.isCancelled else { return }
 
         logResponse("device-code", response: response, provider: provider)
 
@@ -716,15 +862,15 @@ extension OAuth {
     /// - Parameters:
     ///   - provider: the provider the device code is being requested from
     func requestClientCredentials(provider: Provider) async {
-        let transaction = generation
+        let transaction = lifecycleTicket(for: provider.id)
         guard let request = Request.token(provider: provider) else {
             return publish(state: .error(provider, .invalidClientConfiguration))
         }
         guard let (data, response) = try? await urlSession.data(for: request, delegate: OAuthRedirectDelegate.shared) else {
-            guard transaction == generation, !Task.isCancelled else { return }
+            guard isCurrent(transaction, for: provider.id), !Task.isCancelled else { return }
             return publish(state: .error(provider, .badResponse))
         }
-        guard transaction == generation, !Task.isCancelled else { return }
+        guard isCurrent(transaction, for: provider.id), !Task.isCancelled else { return }
 
         logResponse("client-credentials", response: response, provider: provider)
 
@@ -747,7 +893,7 @@ extension OAuth {
     ///   - provider: the provider to poll
     ///   - deviceCode: the device code to use
     func poll(provider: Provider, deviceCode: DeviceCode) async {
-        let transaction = generation
+        let transaction = lifecycleTicket(for: provider.id)
         guard deviceCode.expiresIn > 0, deviceCode.expiresIn <= DeviceCode.maximumTiming,
               deviceCode.interval > 0, deviceCode.interval <= DeviceCode.maximumTiming else {
             return publish(state: .error(provider, .decoding))
@@ -759,7 +905,7 @@ extension OAuth {
         guard let expiration = deviceCode.expiration else {
             return publish(state: .error(provider, .decoding))
         }
-        guard transaction == generation, !Task.isCancelled else { return }
+        guard isCurrent(transaction, for: provider.id), !Task.isCancelled else { return }
         let remainingLifetime = expiration.timeIntervalSince(devicePollingDate())
         guard remainingLifetime > 0, remainingLifetime.isFinite else {
             return publish(state: .error(provider, .expiredDeviceCode))
@@ -767,40 +913,79 @@ extension OAuth {
         let deadline = devicePollingNow().advanced(by: .seconds(remainingLifetime))
         var interval = deviceCode.interval
         while !Task.isCancelled {
-            guard transaction == generation else { return }
-            let remaining = devicePollingNow().duration(to: deadline)
-            guard remaining > .zero else {
+            guard isCurrent(transaction, for: provider.id) else { return }
+            let remainingBeforePoll = devicePollingNow().duration(to: deadline)
+            guard remainingBeforePoll > .zero else {
                 publish(state: .error(provider, .expiredDeviceCode))
                 return
             }
 
             do {
-                try await devicePollingSleep(min(.seconds(Int64(interval)), remaining))
+                try await devicePollingSleep(min(.seconds(Int64(interval)), remainingBeforePoll))
             } catch {
                 return
             }
-            guard transaction == generation, !Task.isCancelled else { return }
-            guard devicePollingNow() < deadline else {
+            guard isCurrent(transaction, for: provider.id), !Task.isCancelled else { return }
+            let remainingUntilDeadline = devicePollingNow().duration(to: deadline)
+            guard remainingUntilDeadline > .zero else {
                 publish(state: .error(provider, .expiredDeviceCode))
                 return
             }
 
+            let session = urlSession
+            let redirectDelegate = OAuthRedirectDelegate.shared
+            let outcome = await withTaskGroup(of: OAuthPollingOutcome.self) { group in
+                group.addTask {
+                    do {
+                        let (data, response) = try await session.data(
+                            for: request,
+                            delegate: redirectDelegate
+                        )
+                        return .response(data, response)
+                    } catch let error as URLError where error.code == .timedOut {
+                        return .timedOut
+                    } catch {
+                        return .failed
+                    }
+                }
+                group.addTask {
+                    do {
+                        try await Task.sleep(for: remainingUntilDeadline)
+                        return .expired
+                    } catch {
+                        return .failed
+                    }
+                }
+                let first = await group.next() ?? .failed
+                group.cancelAll()
+                return first
+            }
             let data: Data
             let response: URLResponse
-            do {
-                (data, response) = try await urlSession.data(for: request, delegate: OAuthRedirectDelegate.shared)
-            } catch {
-                guard transaction == generation, !Task.isCancelled else { return }
-                guard let urlError = error as? URLError, urlError.code == .timedOut else {
-                    publish(state: .error(provider, .badResponse))
-                    return
-                }
+            switch outcome {
+            case .response(let resultData, let resultResponse):
+                data = resultData
+                response = resultResponse
+            case .expired:
+                guard isCurrent(transaction, for: provider.id), !Task.isCancelled else { return }
+                publish(state: .error(provider, .expiredDeviceCode))
+                return
+            case .timedOut:
+                guard isCurrent(transaction, for: provider.id), !Task.isCancelled else { return }
                 interval = interval > DeviceCode.maximumTiming / 2
                     ? DeviceCode.maximumTiming
                     : interval * 2
                 continue
+            case .failed:
+                guard isCurrent(transaction, for: provider.id), !Task.isCancelled else { return }
+                if devicePollingNow() >= deadline {
+                    publish(state: .error(provider, .expiredDeviceCode))
+                } else {
+                    publish(state: .error(provider, .badResponse))
+                }
+                return
             }
-            guard transaction == generation, !Task.isCancelled else { return }
+            guard isCurrent(transaction, for: provider.id), !Task.isCancelled else { return }
             guard devicePollingNow() < deadline else {
                 publish(state: .error(provider, .expiredDeviceCode))
                 return
