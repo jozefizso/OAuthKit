@@ -52,7 +52,8 @@ struct OAuthLifecycleRaceTests {
 
         // Assert: superseded work leaves both the published authorization and stored value unchanged.
         #expect(oauth.state == .authorized(provider, oldAuthorization))
-        #expect((try? oauth.keychain.get(key: provider.id)) == oldAuthorization)
+        let stored: OAuth.Authorization? = try oauth.keychain.get(key: provider.id)
+        #expect(stored == oldAuthorization)
     }
 
     @Test("Device-code responses cannot overwrite a newer flow")
