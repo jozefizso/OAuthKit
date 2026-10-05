@@ -579,6 +579,9 @@ final class OAuthTests {
             redirectURI: "http://127.0.0.1:49152/callback"
         )
         #expect(OAuth.Request.auth(provider: base, grantType: .authorizationCode("state")) != nil)
+        var ipv6Loopback = base
+        ipv6Loopback.redirectURI = "http://[::1]:49152/callback"
+        #expect(OAuth.Request.auth(provider: ipv6Loopback, grantType: .authorizationCode("state")) != nil)
         var invalid = base
         invalid.redirectURI = "http://example.com/callback"
         #expect(OAuth.Request.auth(provider: invalid, grantType: .authorizationCode("state")) == nil)

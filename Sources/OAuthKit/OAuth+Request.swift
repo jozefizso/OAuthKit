@@ -312,7 +312,11 @@ extension OAuth {
             if scheme == "http" {
                 return components.host == "127.0.0.1" || components.host == "::1"
             }
-            return components.host == nil && scheme.contains(".")
+            return components.host == nil &&
+                scheme.contains(".") &&
+                !scheme.hasPrefix(".") &&
+                !scheme.hasSuffix(".") &&
+                !scheme.contains("..")
         }
 
 
