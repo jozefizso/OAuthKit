@@ -22,7 +22,7 @@ struct ContentView: View {
     /// Reacts to oauth state changes by opening or closing authorization windows.
     /// - Parameter state: the published state change
     private func handle(state: OAuth.State) {
-#if canImport(AuthenticationServices)
+#if canImport(AuthenticationServices) && (os(iOS) || os(macOS) || os(visionOS))
         switch state {
         case .empty, .error, .requestingAccessToken, .requestingDeviceCode:
             break

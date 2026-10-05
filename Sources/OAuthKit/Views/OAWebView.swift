@@ -14,82 +14,196 @@ import AppKit
 import UIKit
 #endif
 
+@MainActor
+protocol OAuthExternalAuthenticationSession: AnyObject {
+    var prefersEphemeralWebBrowserSession: Bool { get set }
+    var presentationContextProvider: (any ASWebAuthenticationPresentationContextProviding)? { get set }
+    func start() -> Bool
+    func cancel()
+}
+
+extension ASWebAuthenticationSession: OAuthExternalAuthenticationSession {}
+
+typealias OAuthExternalAuthenticationSessionFactory =
+    @MainActor (URL, ASWebAuthenticationSession.Callback, @escaping (URL?, Error?) -> Void) -> any OAuthExternalAuthenticationSession
+
 /// Presents OAuth authorization in the operating system's trusted external user agent.
 @MainActor
 public struct OAWebView: View {
     let oauth: OAuth
-    @State private var session: ASWebAuthenticationSession?
+    @State private var session: (any OAuthExternalAuthenticationSession)?
+    @State private var sessionGeneration: UInt64?
+    @State private var presentationAnchor: ASPresentationAnchor?
     @Environment(\.openURL) private var openURL
+    private let sessionFactory: OAuthExternalAuthenticationSessionFactory
 
     public init(oauth: OAuth) {
+        self.init(oauth: oauth, sessionFactory: { url, callback, completion in
+            ASWebAuthenticationSession(url: url, callback: callback, completionHandler: completion)
+        })
+    }
+
+    init(oauth: OAuth, sessionFactory: @escaping OAuthExternalAuthenticationSessionFactory) {
         self.oauth = oauth
+        self.sessionFactory = sessionFactory
     }
 
     public var body: some View {
         Color.clear
+            .background(WindowAnchorReader { anchor in
+                guard let anchor else { return }
+                presentationAnchor = anchor
+                if let provider = oauth.activeAuthorizationProvider {
+                    start(provider: provider)
+                }
+            })
+            .onChange(of: oauth.authorizationGeneration, initial: true) { _, _ in
+                if let provider = oauth.activeAuthorizationProvider {
+                    start(provider: provider)
+                } else {
+                    cancelSession()
+                }
+            }
             .onChange(of: oauth.state, initial: true) { _, state in
                 switch state {
                 case .authorizing(let provider, _):
                     start(provider: provider)
-                case .receivedDeviceCode(_, let code):
-                    if let url = URL(string: code.verificationUri) {
+                case .receivedDeviceCode(let provider, let code):
+                    if code.isExpired {
+                        oauth.failDeviceAuthorization(provider: provider)
+                    } else if let url = URL(string: code.verificationUri) {
                         openURL(url)
+                    } else {
+                        oauth.failDeviceAuthorization(provider: provider)
                     }
                 default:
-                    session?.cancel()
-                    session = nil
+                    cancelSession()
                 }
             }
-            .onDisappear {
-                if session != nil {
-                    session?.cancel()
-                    session = nil
-                    oauth.cancelAuthorization()
-                }
-            }
+            .onDisappear(perform: cancel)
     }
-    private func start(provider: OAuth.Provider) {
-        guard session == nil,
+
+    func start(provider: OAuth.Provider, anchor: ASPresentationAnchor? = nil) {
+        guard let generation = oauth.activeAuthorizationGeneration,
+              oauth.activeAuthorizationProvider?.id == provider.id else { return }
+        if sessionGeneration == generation, session != nil { return }
+        cancelSession()
+        guard let presentationAnchor = anchor ?? presentationAnchor,
               let redirect = provider.redirectURI,
-              let callbackScheme = URLComponents(string: redirect)?.scheme,
-              let authorizationURL = oauth.activeAuthorizationURL else {
-            oauth.cancelAuthorization()
-            return
+              let redirectComponents = URLComponents(string: redirect),
+              let scheme = redirectComponents.scheme,
+              let authorizationURL = oauth.activeAuthorizationURL else { return }
+
+        let callback: ASWebAuthenticationSession.Callback
+        if scheme.lowercased() == "https" {
+            guard let host = redirectComponents.host else {
+                oauth.cancelAuthorization(generation: generation)
+                return
+            }
+            callback = .https(host: host, path: redirectComponents.path)
+        } else {
+            callback = .customScheme(scheme)
         }
-        let authSession = ASWebAuthenticationSession(url: authorizationURL, callbackURLScheme: callbackScheme) { [weak oauth] callback, error in
+
+        let authSession = sessionFactory(authorizationURL, callback) { [weak oauth] callbackURL, error in
             Task { @MainActor in
-                guard let oauth else { return }
-                if let callback {
-                    _ = oauth.handleAuthorizationCallback(callback)
+                guard let oauth, oauth.activeAuthorizationGeneration == generation else { return }
+                if let callbackURL {
+                    if !oauth.handleAuthorizationCallback(callbackURL, generation: generation) {
+                        oauth.cancelAuthorization(generation: generation)
+                    }
                 } else if error != nil {
-                    oauth.cancelAuthorization()
+                    oauth.cancelAuthorization(generation: generation)
                 }
             }
         }
-        authSession.presentationContextProvider = AuthenticationPresentationAnchor.shared
+        authSession.presentationContextProvider = AuthenticationPresentationAnchor(anchor: presentationAnchor)
         authSession.prefersEphemeralWebBrowserSession = !oauth.persistBrowserSession
         session = authSession
+        sessionGeneration = generation
         guard authSession.start() else {
-            session = nil
-            oauth.cancelAuthorization()
+            cancelSession()
+            oauth.cancelAuthorization(generation: generation)
             return
         }
+    }
+
+    func cancel() {
+        let generation = sessionGeneration
+        cancelSession()
+        if let generation {
+            oauth.cancelAuthorization(generation: generation)
+        }
+    }
+
+    private func cancelSession() {
+        session?.cancel()
+        session = nil
+        sessionGeneration = nil
     }
 }
 
 @MainActor
 private final class AuthenticationPresentationAnchor: NSObject, ASWebAuthenticationPresentationContextProviding {
-    static let shared = AuthenticationPresentationAnchor()
+    private let anchor: ASPresentationAnchor
+
+    init(anchor: ASPresentationAnchor) {
+        self.anchor = anchor
+    }
 
     func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
-        #if os(macOS)
-        NSApplication.shared.keyWindow ?? NSWindow()
-        #else
-        UIApplication.shared.connectedScenes
-            .compactMap { $0 as? UIWindowScene }
-            .flatMap(\.windows)
-            .first(where: \.isKeyWindow) ?? UIWindow()
-        #endif
+        anchor
+    }
+}
+
+#if os(macOS)
+@MainActor
+private struct WindowAnchorReader: NSViewRepresentable {
+    let onWindow: (NSWindow?) -> Void
+
+    func makeNSView(context: Context) -> AnchorView {
+        let view = AnchorView()
+        view.onWindow = onWindow
+        return view
+    }
+
+    func updateNSView(_ view: AnchorView, context: Context) {
+        view.onWindow = onWindow
+        onWindow(view.window)
+    }
+}
+
+@MainActor
+private final class AnchorView: NSView {
+    var onWindow: ((NSWindow?) -> Void)?
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        onWindow?(window)
+    }
+}
+#else
+@MainActor
+private struct WindowAnchorReader: UIViewRepresentable {
+    let onWindow: (UIWindow?) -> Void
+
+    func makeUIView(context: Context) -> AnchorView {
+        let view = AnchorView()
+        view.onWindow = onWindow
+        return view
+    }
+
+    func updateUIView(_ view: AnchorView, context: Context) {
+        view.onWindow = onWindow
+        onWindow(view.window)
+    }
+}
+
+@MainActor
+private final class AnchorView: UIView {
+    var onWindow: ((UIWindow?) -> Void)?
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        onWindow?(window)
     }
 }
 #endif

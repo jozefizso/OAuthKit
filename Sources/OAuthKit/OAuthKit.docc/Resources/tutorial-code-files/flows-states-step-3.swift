@@ -21,7 +21,7 @@ struct ContentView: View {
     /// Starts the authorization process for the specified provider.
     /// - Parameter provider: the provider to begin authorization for
     private func authorize(provider: OAuth.Provider) {
-        #if canImport(AuthenticationServices)
+        #if canImport(AuthenticationServices) && (os(iOS) || os(macOS) || os(visionOS))
         oauth.authorize(provider: provider)
         #else
         oauth.authorize(provider: provider, grantType: .deviceCode)

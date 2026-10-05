@@ -684,25 +684,53 @@ final class OAuthTests {
         oauth.providers = [provider]
         oauth.authorize(provider: provider)
         #expect(oauth.state == .authorizing(provider, .authorizationCode))
+        let firstGeneration = oauth.authorizationGeneration
         let firstState = URLComponents(url: oauth.activeAuthorizationURL!, resolvingAgainstBaseURL: false)!
             .queryItems!.first(where: { $0.name == "state" })?.value
         let firstChallenge = URLComponents(url: oauth.activeAuthorizationURL!, resolvingAgainstBaseURL: false)!
             .queryItems!.first(where: { $0.name == "code_challenge" })?.value
         oauth.authorize(provider: provider)
+        let secondGeneration = oauth.authorizationGeneration
         let secondState = URLComponents(url: oauth.activeAuthorizationURL!, resolvingAgainstBaseURL: false)!
             .queryItems!.first(where: { $0.name == "state" })?.value
         let secondChallenge = URLComponents(url: oauth.activeAuthorizationURL!, resolvingAgainstBaseURL: false)!
             .queryItems!.first(where: { $0.name == "code_challenge" })?.value
         #expect(firstState != secondState)
         #expect(firstChallenge != secondChallenge)
+        #expect(firstGeneration != secondGeneration)
         oauth.clear()
         #expect(oauth.state == .empty)
     }
+    @Test("Issuer-less servers require matcher-distinct redirects")
+    func whenRequiringDistinctRedirectsWithoutIssuer() {
+        let first = OAuth.Provider(
+            id: "server-one",
+            authorizationURL: URL(string: "https://one.example/authorize")!,
+            accessTokenURL: URL(string: "https://one.example/token")!,
+            clientID: "one",
+            clientSecret: nil,
+            redirectURI: "MYAPP://CALLBACK?tenant=a+b"
+        )
+        let second = OAuth.Provider(
+            id: "server-two",
+            authorizationURL: URL(string: "https://two.example/authorize")!,
+            accessTokenURL: URL(string: "https://two.example/token")!,
+            clientID: "two",
+            clientSecret: nil,
+            redirectURI: "myapp://callback?tenant=a%20b"
+        )
+        oauth.providers = [first, second]
+        oauth.authorize(provider: first)
+        #expect(oauth.state == .error(first, .malformedURL))
+        #expect(oauth.activeAuthorizationURL == nil)
+    }
+
 
     /// Tests the single-use callback transaction against issuer and redirect mix-up inputs.
     @Test("Authorization Callback Binding and Single Use")
     func whenBindingAuthorizationCallbacks() async throws {
         let testProvider = OAuth.Provider(
+            id: "issuer-bound-test",
             authorizationURL: URL(string: "https://auth.example/authorize")!,
             accessTokenURL: URL(string: "https://auth.example/token")!,
             issuer: "https://auth.example/issuer+v1",
@@ -719,15 +747,19 @@ final class OAuthTests {
             components.scheme = "myapp"
             components.host = host.isEmpty ? "callback" : host
             components.queryItems = items
+            components.percentEncodedQuery = components.percentEncodedQuery?.replacingOccurrences(of: "+", with: "%2B")
             return components.url!
         }
         let validItems = [
             URLQueryItem(name: "tenant", value: "one"),
             URLQueryItem(name: "code", value: "test-code"),
             URLQueryItem(name: "state", value: state),
-            URLQueryItem(name: "iss", value: "https://auth.example/issuer+v1")
+            URLQueryItem(name: "iss", value: "https://auth.example/issuer+v1"),
+            URLQueryItem(name: "scope", value: "openid")
         ]
         #expect(!oauth.handleAuthorizationCallback(makeCallback(validItems.filter { $0.name != "iss" }, "")))
+        let rawPlusCallback = URL(string: "myapp://callback?tenant=one&code=test-code&state=\(state)&iss=https%3A%2F%2Fauth.example%2Fissuer+v1")!
+        #expect(!oauth.handleAuthorizationCallback(rawPlusCallback))
         #expect(!oauth.handleAuthorizationCallback(makeCallback(validItems.map {
             $0.name == "iss" ? URLQueryItem(name: "iss", value: "https://AUTH.example/issuer+v1") : $0
         }, "")))
@@ -743,6 +775,29 @@ final class OAuthTests {
         #expect(oauth.handleAuthorizationCallback(callback))
         #expect(!oauth.handleAuthorizationCallback(callback))
         #expect(await waitForAuthorization(oauth))
+        oauth.authorize(provider: testProvider)
+        let errorState = URLComponents(url: oauth.activeAuthorizationURL!, resolvingAgainstBaseURL: false)!
+            .queryItems!.first(where: { $0.name == "state" })!.value!
+        let errorItems = [
+            URLQueryItem(name: "tenant", value: "one"),
+            URLQueryItem(name: "state", value: errorState),
+            URLQueryItem(name: "error", value: "access_denied"),
+            URLQueryItem(name: "iss", value: "https://auth.example/issuer+v1")
+        ]
+        #expect(!oauth.handleAuthorizationCallback(makeCallback(errorItems.filter { $0.name != "iss" }, "")))
+        #expect(oauth.handleAuthorizationCallback(makeCallback(errorItems, "")))
+        #expect(oauth.state == .error(testProvider, .badResponse))
+        oauth.authorize(provider: testProvider)
+        let clearedState = URLComponents(url: oauth.activeAuthorizationURL!, resolvingAgainstBaseURL: false)!
+            .queryItems!.first(where: { $0.name == "state" })!.value!
+        let callbackAfterClear = makeCallback([
+            URLQueryItem(name: "tenant", value: "one"),
+            URLQueryItem(name: "code", value: "must-not-be-exchanged"),
+            URLQueryItem(name: "state", value: clearedState),
+            URLQueryItem(name: "iss", value: "https://auth.example/issuer+v1")
+        ], "")
+        oauth.clear()
+        #expect(!oauth.handleAuthorizationCallback(callbackAfterClear))
     }
 
     /// Captures every OAuth response diagnostic and verifies that no credential payload is emitted.

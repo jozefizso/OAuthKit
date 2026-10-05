@@ -43,7 +43,7 @@ struct OAuthApp: App {
             ContentView()
         }
         
-#if canImport(AuthenticationServices)
+#if canImport(AuthenticationServices) && (os(iOS) || os(macOS) || os(visionOS))
         WindowGroup(id: "oauth") {
             OAWebView(oauth: oauth)
         }
@@ -56,12 +56,12 @@ struct ContentView: View {
     @Environment(\.oauth)
     var oauth: OAuth
 
-    @Environment(\.openWindow)
+#if canImport(AuthenticationServices) && (os(iOS) || os(macOS) || os(visionOS))
     var openWindow
     
     @Environment(\.dismissWindow)
     private var dismissWindow
-
+    #endif
     var body: some View {
         VStack {
             switch oauth.state {
@@ -108,13 +108,17 @@ struct ContentView: View {
     /// Starts the authorization process for the specified provider.
     /// - Parameter provider: the provider to begin authorization for
     private func authorize(provider: OAuth.Provider) {
+        #if canImport(AuthenticationServices) && (os(iOS) || os(macOS) || os(visionOS))
         oauth.authorize(provider: provider)
+        #else
+        oauth.authorize(provider: provider, grantType: .deviceCode)
+        #endif
     }
     
     /// Reacts to oauth state changes by opening or closing authorization windows.
     /// - Parameter state: the published state change
     private func handle(state: OAuth.State) {
-#if canImport(AuthenticationServices)
+#if canImport(AuthenticationServices) && (os(iOS) || os(macOS) || os(visionOS))
         switch state {
         case .empty, .error, .requestingAccessToken, .requestingDeviceCode:
             break

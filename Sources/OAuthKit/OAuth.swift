@@ -93,6 +93,7 @@ public final class OAuth: Sendable {
 
     @ObservationIgnored
     private var pendingAuthorization: OAuthPendingAuthorization?
+    internal var authorizationGeneration: UInt64 = 0
 
     /// The json decoder
     @ObservationIgnored
@@ -140,8 +141,9 @@ public final class OAuth: Sendable {
 private struct OAuthPendingAuthorization {
     let provider: OAuth.Provider
     let pkce: OAuth.PKCE
-}
+    let generation: UInt64
 
+}
 public extension OAuth {
 
     /// Generates a cryptographically secure random Base 64 URL encoded string.
@@ -158,22 +160,32 @@ public extension OAuth {
     func authorize(provider: Provider, grantType: GrantType = .authorizationCode) {
         switch grantType {
         case .authorizationCode:
-            guard (provider.issuer == nil || isCanonicalIssuer(provider.issuer!)),
+            supersedeTasks()
+            pendingAuthorization = nil
+            authorizationGeneration &+= 1
+            guard provider.redirectURI != nil,
+                  isValidRegisteredRedirect(provider.redirectURI),
+                  (provider.issuer == nil || isCanonicalIssuer(provider.issuer!)),
                   provider.issuer != nil || providers.allSatisfy({ candidate in
                       candidate.id == provider.id ||
                       (candidate.authorizationURL.absoluteString == provider.authorizationURL.absoluteString &&
                        candidate.accessTokenURL.absoluteString == provider.accessTokenURL.absoluteString) ||
-                      candidate.redirectURI != provider.redirectURI
+                      !redirectURIsEquivalent(candidate.redirectURI, provider.redirectURI)
                   }) else {
                 state = .error(provider, .malformedURL)
                 return
             }
-            supersedeTasks()
             let pkce = PKCE()
-            pendingAuthorization = OAuthPendingAuthorization(provider: provider, pkce: pkce)
+            pendingAuthorization = OAuthPendingAuthorization(
+                provider: provider,
+                pkce: pkce,
+                generation: authorizationGeneration
+            )
             state = .authorizing(provider, .authorizationCode)
         case .deviceCode:
             supersedeTasks()
+            pendingAuthorization = nil
+            authorizationGeneration &+= 1
             state = .requestingDeviceCode(provider)
             task { [self] in
                 await requestDeviceCode(provider: provider)
@@ -198,42 +210,54 @@ public extension OAuth {
         return Request.auth(provider: pendingAuthorization.provider, pkce: pendingAuthorization.pkce)?.url
     }
 
+    internal var activeAuthorizationProvider: Provider? {
+        pendingAuthorization?.provider
+    }
+
+    internal var activeAuthorizationGeneration: UInt64? {
+        pendingAuthorization?.generation
+    }
+
+    internal func failDeviceAuthorization(provider: Provider) {
+        state = .error(provider, .badResponse)
+    }
     internal func cancelAuthorization() {
-        guard pendingAuthorization != nil else { return }
+        guard let pendingAuthorization else { return }
+        cancelAuthorization(generation: pendingAuthorization.generation)
+    }
+
+    internal func cancelAuthorization(generation: UInt64) {
+        guard pendingAuthorization?.generation == generation else { return }
         pendingAuthorization = nil
+        authorizationGeneration &+= 1
         supersedeTasks()
         state = .empty
     }
+
     /// Validates and consumes the active authorization callback before exchanging its code.
     @discardableResult
-    func handleAuthorizationCallback(_ url: URL) -> Bool {
+    func handleAuthorizationCallback(_ url: URL, generation: UInt64? = nil) -> Bool {
         guard let transaction = pendingAuthorization,
+              generation == nil || generation == transaction.generation,
               let redirectURI = transaction.provider.redirectURI,
               let redirect = URLComponents(string: redirectURI),
               let callback = URLComponents(url: url, resolvingAgainstBaseURL: false),
-              callback.scheme == redirect.scheme,
-              callback.host == redirect.host,
-              callback.port == redirect.port,
-              callback.percentEncodedPath == redirect.percentEncodedPath,
-              callback.user == nil,
-              callback.password == nil,
-              callback.fragment == nil,
-              redirect.user == nil,
-              redirect.password == nil,
-              redirect.fragment == nil,
+              redirectComponentsMatch(callback, redirect),
               let callbackItems = formQueryItems(callback.percentEncodedQuery),
               let redirectItems = formQueryItems(redirect.percentEncodedQuery) else { return false }
         let provider = transaction.provider
         let pkce = transaction.pkce
+        let names = callbackItems.map(\.name)
         let stateItems = callbackItems.filter { $0.name == "state" }
         let codeItems = callbackItems.filter { $0.name == "code" }
         let errorItems = callbackItems.filter { $0.name == "error" }
         let issuerItems = callbackItems.filter { $0.name == "iss" }
-        let names = callbackItems.map(\.name)
+        let hasCode = codeItems.count == 1 && codeItems[0].value?.isEmpty == false && errorItems.isEmpty
+        let hasError = errorItems.count == 1 && errorItems[0].value?.isEmpty == false && codeItems.isEmpty
         guard Set(names).count == names.count,
               stateItems.count == 1,
               stateItems[0].value == pkce.state,
-              codeItems.count + errorItems.count == 1,
+              hasCode || hasError,
               issuerItems.count <= 1 else { return false }
         if let issuer = provider.issuer {
             guard isCanonicalIssuer(issuer), issuerItems.count == 1, issuerItems[0].value == issuer else { return false }
@@ -244,13 +268,13 @@ public extension OAuth {
             let matches = callbackItems.filter { $0.name == item.name }
             guard matches.count == 1, matches[0].value == item.value else { return false }
         }
-        let staticNames = Set(redirectItems.map(\.name))
-        let responseNames: Set<String> = ["state", "code", "iss", "error", "error_description", "error_uri"]
-        guard callbackItems.allSatisfy({ staticNames.contains($0.name) || responseNames.contains($0.name) }) else { return false }
         supersedeTasks()
         pendingAuthorization = nil
-        if errorItems.isEmpty, let code = codeItems.first?.value {
-            requestToken(provider: provider, code: code, pkce: pkce)
+        if hasCode, let code = codeItems.first?.value {
+            state = .requestingAccessToken(provider)
+            task { [self] in
+                await requestToken(provider: provider, code: code, pkce: pkce)
+            }
         } else {
             state = .error(provider, .badResponse)
         }
@@ -269,6 +293,51 @@ public extension OAuth {
             items.append(URLQueryItem(name: name, value: value))
         }
         return items
+    }
+    private func isValidRegisteredRedirect(_ value: String?) -> Bool {
+        guard let value,
+              let components = URLComponents(string: value),
+              components.scheme?.isEmpty == false,
+              components.user == nil,
+              components.password == nil,
+              components.fragment == nil,
+              let items = formQueryItems(components.percentEncodedQuery) else { return false }
+        let names = items.map(\.name)
+        let reserved = Set(["state", "code", "iss", "error", "error_description", "error_uri"])
+        return Set(names).count == names.count && names.allSatisfy { !reserved.contains($0) }
+    }
+
+    private func normalizedRedirectPort(_ components: URLComponents) -> Int? {
+        if let port = components.port { return port }
+        switch components.scheme?.lowercased() {
+        case "http": return 80
+        case "https": return 443
+        default: return nil
+        }
+    }
+
+    private func redirectComponentsMatch(_ left: URLComponents, _ right: URLComponents) -> Bool {
+        left.scheme?.lowercased() == right.scheme?.lowercased() &&
+            left.host?.lowercased() == right.host?.lowercased() &&
+            normalizedRedirectPort(left) == normalizedRedirectPort(right) &&
+            left.percentEncodedPath == right.percentEncodedPath &&
+            left.user == nil && left.password == nil && left.fragment == nil &&
+            right.user == nil && right.password == nil && right.fragment == nil
+    }
+
+    private func redirectURIsEquivalent(_ lhs: String?, _ rhs: String?) -> Bool {
+        guard let lhs, let rhs,
+              let left = URLComponents(string: lhs),
+              let right = URLComponents(string: rhs),
+              redirectComponentsMatch(left, right),
+              let leftItems = formQueryItems(left.percentEncodedQuery),
+              let rightItems = formQueryItems(right.percentEncodedQuery) else { return lhs == rhs }
+        guard leftItems.count == rightItems.count,
+              Set(leftItems.map(\.name)).count == leftItems.count,
+              Set(rightItems.map(\.name)).count == rightItems.count else { return false }
+        return leftItems.allSatisfy { item in
+            rightItems.first(where: { $0.name == item.name })?.value == item.value
+        }
     }
     private func isCanonicalIssuer(_ issuer: String) -> Bool {
         guard let components = URLComponents(string: issuer),
@@ -300,6 +369,8 @@ public extension OAuth {
     /// Removes this client's stored tokens. State becomes empty only after confirmed deletion.
     /// - Throws: The storage error when deletion fails, leaving the current state unchanged.
     func clear() throws {
+        pendingAuthorization = nil
+        authorizationGeneration &+= 1
         supersedeTasks()
         guard try keychain.clear() else { throw OAError.keychain }
         state = .empty
