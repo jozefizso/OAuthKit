@@ -57,7 +57,7 @@
         "clientSecret": "CLIENT_SECRET",
         "clientType": "confidential",
         "clientAuthentication": "clientSecretBasic",
-        "redirectURI": "oauthkit://callback",
+        "redirectURI": "com.example.oauthkit:/callback",
         "scope": [
             "user",
             "repo"

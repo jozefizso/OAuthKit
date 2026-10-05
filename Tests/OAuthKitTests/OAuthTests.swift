@@ -150,6 +150,7 @@ final class OAuthTests {
         let body = String(data: request!.httpBody!, encoding: .utf8)!
         #expect(request!.url!.query == nil)
         #expect(body.contains("client_id="))
+        #expect(request!.value(forHTTPHeaderField: "Authorization")?.hasPrefix("Basic ") == true)
         oauth.authorize(provider: provider, grantType: .deviceCode)
     }
 
@@ -176,7 +177,7 @@ final class OAuthTests {
         #expect(data != nil)
         #expect(request?.value(forHTTPHeaderField: "Authorization")?.hasPrefix("Basic ") == true)
         #expect(stringData!.contains("code=\(code)"))
-        #expect(stringData!.contains("redirect_uri=\(provider.redirectURI!)"))
+        #expect(stringData!.contains("redirect_uri=https%3A%2F%2Fgithub.com%2Fcodefiesta%2F"))
         #expect(stringData!.contains("grant_type=authorization_code"))
         oauth.token(provider: provider, code: code, pkce: nil)
         let result = await waitForAuthorization(oauth)
@@ -195,7 +196,7 @@ final class OAuthTests {
         #expect(data != nil)
         #expect(request?.value(forHTTPHeaderField: "Authorization")?.hasPrefix("Basic ") == true)
         #expect(stringData!.contains("code=\(code)"))
-        #expect(stringData!.contains("redirect_uri=\(provider.redirectURI!)"))
+        #expect(stringData!.contains("redirect_uri=https%3A%2F%2Fgithub.com%2Fcodefiesta%2F"))
         #expect(stringData!.contains("grant_type=authorization_code"))
         #expect(stringData!.contains("code_verifier=\(pkce.codeVerifier)"))
         oauth.token(provider: provider, code: code, pkce: pkce)
@@ -472,6 +473,7 @@ final class OAuthTests {
             id: "form",
             authorizationURL: URL(string: "https://example.com/authorize")!,
             accessTokenURL: URL(string: "https://example.com/token")!,
+            deviceCodeURL: URL(string: "https://example.com/device")!,
             clientID: "client &+% 雪",
             clientSecret: "secret +% 雪",
             clientType: .confidential,
@@ -481,12 +483,31 @@ final class OAuthTests {
         let request = OAuth.Request.token(provider: provider, code: "code&+% 雪")
         let body = String(data: request!.httpBody!, encoding: .utf8)!
 
+        let deviceRequest = OAuth.Request.device(provider: provider)
+        let deviceBody = String(data: deviceRequest!.httpBody!, encoding: .utf8)!
+        #expect(deviceRequest?.value(forHTTPHeaderField: "Authorization") == nil)
+        #expect(deviceBody.contains("client_id=client+%26%2B%25+%E9%9B%AA"))
+        #expect(deviceBody.contains("client_secret=secret+%2B%25+%E9%9B%AA"))
         #expect(request!.url?.query == nil)
         #expect(body.contains("client_id=client+%26%2B%25+%E9%9B%AA"))
         #expect(body.contains("client_secret=secret+%2B%25+%E9%9B%AA"))
         #expect(body.contains("code=code%26%2B%25+%E9%9B%AA"))
         #expect(body.contains("redirect_uri=https%3A%2F%2Fapp.example%2Fcallback%3Fa%3D1%26b%3D2"))
         #expect(request?.value(forHTTPHeaderField: "Content-Type") == "application/x-www-form-urlencoded")
+        var basicProvider = provider
+        basicProvider.clientAuthentication = .clientSecretBasic
+        let basicDeviceRequest = OAuth.Request.device(provider: basicProvider)
+        let basicDeviceBody = String(data: basicDeviceRequest!.httpBody!, encoding: .utf8)!
+        let encodedClientID = "client+%26%2B%25+%E9%9B%AA"
+        let encodedSecret = "secret+%2B%25+%E9%9B%AA"
+        let expectedCredentials = Data("\(encodedClientID):\(encodedSecret)".utf8).base64EncodedString()
+        #expect(basicDeviceRequest?.value(forHTTPHeaderField: "Authorization") == "Basic \(expectedCredentials)")
+        #expect(basicDeviceBody.contains("client_id=\(encodedClientID)"))
+        #expect(basicDeviceBody.contains("client_secret") == false)
+
+        let basicTokenRequest = OAuth.Request.token(provider: basicProvider, code: "code&+% 雪")
+        #expect(basicTokenRequest?.value(forHTTPHeaderField: "Authorization") == "Basic \(expectedCredentials)")
+        #expect(String(data: basicTokenRequest!.httpBody!, encoding: .utf8)!.contains("client_id=") == false)
     }
 
     /// Arrange an insecure endpoint and protected-resource destination, act by building requests or attaching a token,
@@ -524,6 +545,25 @@ final class OAuthTests {
         #expect(OAuth.Request.refresh(provider: provider, token: token) == nil)
         #expect(OAuth.Request.token(provider: provider, deviceCode: .init(deviceCode: "device", userCode: "123", verificationUri: "https://example.com", expiresIn: 30, interval: 5)) == nil)
         #expect(OAuth.Request.device(provider: provider) == nil)
+        let collisionProvider = OAuth.Provider(
+            id: "collision",
+            authorizationURL: URL(string: "https://example.com/authorize")!,
+            accessTokenURL: URL(string: "https://example.com/token?grant_type=forged&tenant=one")!,
+            clientID: "public"
+        )
+        #expect(OAuth.Request.token(provider: collisionProvider, code: "code") == nil)
+
+        let safeQueryProvider = OAuth.Provider(
+            id: "static-query",
+            authorizationURL: URL(string: "https://example.com/authorize")!,
+            accessTokenURL: URL(string: "https://example.com/token?tenant=one")!,
+            clientID: "public"
+        )
+        #expect(OAuth.Request.token(provider: safeQueryProvider, code: "code")?.url?.query == "tenant=one")
+        var staticAuthQueryProvider = safeQueryProvider
+        staticAuthQueryProvider.authorizationURL = URL(string: "https://example.com/authorize?tenant=one")!
+        let authRequest = OAuth.Request.auth(provider: staticAuthQueryProvider, grantType: .authorizationCode("state"))
+        #expect(URLComponents(url: authRequest!.url!, resolvingAgainstBaseURL: false)?.queryItems?.first?.name == "tenant")
     }
 
     /// Streams the oauth status until we receive an authorization.
