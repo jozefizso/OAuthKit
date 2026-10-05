@@ -24,14 +24,16 @@ private struct OAuthErrorResponse: Decodable {
 }
 
 /// Provides an enum of oauth errors.
-public enum OAError: Error, Equatable {
+public enum OAError: Error, Equatable, Sendable {
     /// An error occurred while building a request url
     case malformedURL
     /// An error occurred while loading data from a request
     case badResponse
     /// Unable to decode a response from a provider into an expected type.
     case decoding
-    /// The authorization server returned an OAuth error code.
+    /// The device code has expired.
+    case expiredDeviceCode
+    /// The authorization server returned an OAuth error.
     case oauth(String)
     /// Unable to write data to the keychain
     case keychain
@@ -93,6 +95,12 @@ public final class OAuth: Sendable {
     /// The json decoder
     @ObservationIgnored
     private let decoder: JSONDecoder = .init()
+
+    /// Injectable device-poll delay for deterministic polling tests.
+    @ObservationIgnored
+    var devicePollingSleep: @MainActor (Duration) async throws -> Void = { duration in
+        try await Task.sleep(for: duration)
+    }
 
     /// Initializes the OAuth service with the specified providers and configuration options.
     /// - Parameters:
@@ -304,10 +312,8 @@ private extension OAuth {
     ///   - provider: the oauth provider
     ///   - deviceCode: the device code issued by the provider
     func schedule(provider: Provider, deviceCode: DeviceCode) {
-        let timeInterval = TimeInterval(deviceCode.interval)
         let id = UUID()
         let handle = Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .seconds(timeInterval))
             guard let self, !Task.isCancelled else { return }
             await poll(provider: provider, deviceCode: deviceCode)
             tasks.removeValue(forKey: id)
@@ -568,33 +574,99 @@ extension OAuth {
     ///   - deviceCode: the device code to use
     func poll(provider: Provider, deviceCode: DeviceCode) async {
         let transaction = generation
-
-        guard !deviceCode.isExpired, let request = Request.token(provider: provider, deviceCode: deviceCode) else {
+        guard deviceCode.expiresIn > 0, deviceCode.expiresIn <= Int(Int64.max / 2),
+              deviceCode.interval > 0 else {
+            return publish(state: .error(provider, .decoding))
+        }
+        guard let request = Request.token(provider: provider, deviceCode: deviceCode) else {
             return publish(state: .error(provider, .malformedURL))
         }
 
-        guard let (data, response) = try? await urlSession.data(for: request, delegate: OAuthRedirectDelegate.shared) else {
-            return publish(state: .error(provider, .badResponse))
+        guard let expiration = deviceCode.expiration else {
+            return publish(state: .error(provider, .decoding))
         }
         guard transaction == generation, !Task.isCancelled else { return }
-
-        if provider.debug {
-            let statusCode = response.statusCode() ?? -1
-            let rawData = String(data: data, encoding: .utf8) ?? .empty
-            debugPrint("Response: [\(statusCode))]", "Data: [\(rawData)]")
+        let remainingLifetime = expiration.timeIntervalSinceNow
+        guard remainingLifetime > 0, remainingLifetime.isFinite else {
+            return publish(state: .error(provider, .expiredDeviceCode))
         }
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(Int64(remainingLifetime)))
+        var interval = deviceCode.interval
+        while !Task.isCancelled {
+            guard transaction == generation else { return }
+            let remaining = clock.now.duration(to: deadline)
+            guard remaining > .zero else {
+                publish(state: .error(provider, .expiredDeviceCode))
+                return
+            }
 
-        /// If we received something other than a 200 response or we can't decode the token then restart the polling
-        guard response.isOK, let token = try? decoder.decode(Token.self, from: data) else {
-            // Reschedule the polling task
-            return schedule(provider: provider, deviceCode: deviceCode)
-        }
+            do {
+                try await devicePollingSleep(min(.seconds(Int64(interval)), remaining))
+            } catch {
+                return
+            }
+            guard transaction == generation, !Task.isCancelled else { return }
+            guard clock.now < deadline else {
+                publish(state: .error(provider, .expiredDeviceCode))
+                return
+            }
 
-        // Store the authorization
-        let authorization = Authorization(issuer: provider.id, token: token)
-        guard let stored = try? keychain.set(authorization, for: authorization.issuer), stored else {
-            return publish(state: .error(provider, .keychain))
+            let data: Data
+            let response: URLResponse
+            do {
+                (data, response) = try await urlSession.data(for: request, delegate: OAuthRedirectDelegate.shared)
+            } catch {
+                guard transaction == generation, !Task.isCancelled else { return }
+                let doubled = interval.multipliedReportingOverflow(by: 2)
+                interval = doubled.overflow ? Int.max : doubled.partialValue
+                continue
+            }
+            guard transaction == generation, !Task.isCancelled else { return }
+            guard clock.now < deadline else {
+                publish(state: .error(provider, .expiredDeviceCode))
+                return
+            }
+
+            if provider.debug {
+                debugPrint("Device token response: [\(response.statusCode() ?? -1)]")
+            }
+            guard response.isOK else {
+                guard let error = Self.oauthError(from: data) else {
+                    publish(state: .error(provider, .decoding))
+                    return
+                }
+                switch error {
+                case "authorization_pending":
+                    continue
+                case "slow_down":
+                    let increased = interval.addingReportingOverflow(5)
+                    interval = increased.overflow ? Int.max : increased.partialValue
+                default:
+                    publish(state: .error(provider, .oauth(error)))
+                    return
+                }
+                continue
+            }
+
+            guard let token = try? decoder.decode(Token.self, from: data) else {
+                publish(state: .error(provider, .decoding))
+                return
+            }
+            let authorization = Authorization(issuer: provider.id, token: token)
+            guard let stored = try? keychain.set(authorization, for: authorization.issuer), stored else {
+                publish(state: .error(provider, .keychain))
+                return
+            }
+            publish(state: .authorized(provider, authorization))
+            return
         }
-        publish(state: .authorized(provider, authorization))
+    }
+
+    private static func oauthError(from data: Data) -> String? {
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return nil
+        }
+        return object["error"] as? String
     }
 }

@@ -58,4 +58,48 @@ struct CodableTests {
         #expect(deviceCode.expiration != nil)
         #expect(deviceCode.interval == decoded.interval)
     }
+    @Test("Device codes default to a five-second interval")
+    func deviceCodeDefaultsPollingInterval() throws {
+        // Arrange
+        let data = Data(#"{"device_code":"device","user_code":"USER","verification_uri":"https://example.com/device","expires_in":600}"#.utf8)
+
+        // Act
+        let deviceCode = try decoder.decode(OAuth.DeviceCode.self, from: data)
+
+        // Assert
+        #expect(deviceCode.interval == 5)
+        #expect(deviceCode.expiresIn == 600)
+    }
+
+    @Test("Device codes reject missing and nonpositive expiry")
+    func deviceCodeRequiresPositiveExpiry() {
+        // Arrange
+        let payloads = [
+            #"{"device_code":"device","user_code":"USER","verification_uri":"https://example.com/device"}"#,
+            #"{"device_code":"device","user_code":"USER","verification_uri":"https://example.com/device","expires_in":0}"#,
+            #"{"device_code":"device","user_code":"USER","verification_uri":"https://example.com/device","expires_in":-1}"#
+        ]
+
+        // Act
+        let decoded = payloads.map { try? decoder.decode(OAuth.DeviceCode.self, from: Data($0.utf8)) }
+
+        // Assert
+        #expect(decoded.allSatisfy { $0 == nil })
+    }
+
+    @Test("Device codes reject invalid and unsafe timing values")
+    func deviceCodeRejectsInvalidTiming() {
+        // Arrange
+        let payloads = [
+            #"{"device_code":"device","user_code":"USER","verification_uri":"https://example.com/device","expires_in":10,"interval":0}"#,
+            #"{"device_code":"device","user_code":"USER","verification_uri":"https://example.com/device","expires_in":10,"interval":-1}"#,
+            #"{"device_code":"device","user_code":"USER","verification_uri":"https://example.com/device","expires_in":18446744073709551615}"#
+        ]
+
+        // Act
+        let decoded = payloads.map { try? decoder.decode(OAuth.DeviceCode.self, from: Data($0.utf8)) }
+
+        // Assert
+        #expect(decoded.allSatisfy { $0 == nil })
+    }
 }

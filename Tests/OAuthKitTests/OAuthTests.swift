@@ -385,9 +385,9 @@ final class OAuthTests {
         #expect(oauth.state == .error(provider, .badResponse))
 
         // Device Code Polling
-        let deviceCode: OAuth.DeviceCode = .init(deviceCode: .secureRandom(), userCode: .secureRandom(), verificationUri: "https://example.com", expiresIn: 200, interval: 0)
+        let deviceCode: OAuth.DeviceCode = .init(deviceCode: .secureRandom(), userCode: .secureRandom(), verificationUri: "https://example.com", expiresIn: 2, interval: 1)
         await oauth.poll(provider: provider, deviceCode: deviceCode)
-        #expect(oauth.state == .error(provider, .badResponse))
+        #expect(oauth.state == .error(provider, .expiredDeviceCode))
     }
 
     /// Tests the PKCE request parameters.
@@ -408,10 +408,78 @@ final class OAuthTests {
     /// Tests OAuth Secure Random State Generation
     @Test("OAuth Polling for Device Code Authorization")
     private func whenPollingForDeviceCodeAuthorization() async throws {
-        let deviceCode: OAuth.DeviceCode = .init(deviceCode: .secureRandom(), userCode: .secureRandom(), verificationUri: "https://example.com", expiresIn: 200, interval: 0)
+        let deviceCode: OAuth.DeviceCode = .init(deviceCode: .secureRandom(), userCode: .secureRandom(), verificationUri: "https://example.com", expiresIn: 200, interval: 1)
         await oauth.poll(provider: provider, deviceCode: deviceCode)
         let result = await waitForAuthorization(oauth)
         #expect(result == true)
+    }
+
+    @Test("Device polling backs off on network failures and stops at expiry")
+    func devicePollingBacksOffUntilExpiry() async throws {
+        // Arrange
+        let configuration: URLSessionConfiguration = .ephemeral
+        configuration.protocolClasses = [OAuthTestServerErrorURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        let poller = OAuth(providers: [provider], options: [
+            .applicationTag: "oauthkit.test." + .secureRandom(),
+            .urlSession: session
+        ])
+        let deviceCode = OAuth.DeviceCode(deviceCode: .secureRandom(), userCode: "USER",
+                                          verificationUri: "https://example.com/device",
+                                          expiresIn: 2, interval: 1)
+
+        // Act
+        await poller.poll(provider: provider, deviceCode: deviceCode)
+
+        // Assert
+        #expect(poller.state == .error(provider, .expiredDeviceCode))
+    }
+
+    @Test("Device polling stops on terminal OAuth errors")
+    func devicePollingStopsOnOAuthError() async throws {
+        // Arrange
+        let configuration: URLSessionConfiguration = .ephemeral
+        configuration.protocolClasses = [OAuthTestOAuthErrorURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        let poller = OAuth(providers: [provider], options: [
+            .applicationTag: "oauthkit.test." + .secureRandom(),
+            .urlSession: session
+        ])
+        let deviceCode = OAuth.DeviceCode(deviceCode: .secureRandom(), userCode: "USER",
+                                          verificationUri: "https://example.com/device",
+                                          expiresIn: 10, interval: 1)
+
+        // Act
+        await poller.poll(provider: provider, deviceCode: deviceCode)
+
+        // Assert
+        #expect(poller.state == .error(provider, .oauth("access_denied")))
+    }
+
+    @Test("slow_down adds five seconds and pending keeps the longer interval")
+    func devicePollingPersistsSlowDownInterval() async throws {
+        // Arrange
+        let configuration: URLSessionConfiguration = .ephemeral
+        configuration.protocolClasses = [OAuthTestSlowDownURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        let poller = OAuth(providers: [provider], options: [
+            .applicationTag: "oauthkit.test." + .secureRandom(),
+            .urlSession: session
+        ])
+        var delays = [Duration]()
+        poller.devicePollingSleep = { delay in
+            delays.append(delay)
+        }
+        let deviceCode = OAuth.DeviceCode(deviceCode: .secureRandom(), userCode: "USER",
+                                          verificationUri: "https://example.com/device",
+                                          expiresIn: 60, interval: 1)
+
+        // Act
+        await poller.poll(provider: provider, deviceCode: deviceCode)
+
+        // Assert
+        #expect(poller.state == .error(provider, .oauth("access_denied")))
+        #expect(delays == [.seconds(1), .seconds(1), .seconds(6), .seconds(6)])
     }
 
     /// Tests to make sure the PKCE code verifier and challenge are correct.

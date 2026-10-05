@@ -25,23 +25,22 @@ extension OAuth {
         public let verificationUri: String
         /// Either a QR Code or shortened URL with embedded user code
         public let verificationUriComplete: String?
-        /// The lifetime in seconds for `deviceCode` and `userCode`
-        public let expiresIn: Int?
-        /// The polling interval
+        /// The required lifetime in seconds for `deviceCode` and `userCode`.
+        public let expiresIn: Int
+        /// The polling interval in seconds. Omitted server values default to five seconds.
         public let interval: Int
         /// The issue date.
         public let issued: Date = .now
 
         /// Returns true if the device code is expired.
         public var isExpired: Bool {
-            guard let expiresIn = expiresIn else { return false }
-            return issued.addingTimeInterval(Double(expiresIn)) < Date.now
+            expiration.map { $0 <= Date.now } ?? true
         }
 
-        /// Returns the expiration date of the device token or nil if none exists.
+        /// Returns the expiration date of the device token.
         public var expiration: Date? {
-            guard let expiresIn = expiresIn else { return nil }
-            return issued.addingTimeInterval(TimeInterval(expiresIn))
+            let value = issued.addingTimeInterval(TimeInterval(expiresIn))
+            return value.timeIntervalSince1970.isFinite ? value : nil
         }
 
         enum CodingKeys: String, CodingKey {
@@ -66,7 +65,7 @@ extension OAuth {
         ///   - interval: the polling interval
         public init(deviceCode: String, userCode: String,
                     verificationUri: String, verificationUriComplete: String? = nil,
-                    expiresIn: Int?, interval: Int) {
+                    expiresIn: Int, interval: Int = 5) {
             self.deviceCode = deviceCode
             self.userCode = userCode
             self.verificationUri = verificationUri
@@ -79,12 +78,11 @@ extension OAuth {
         /// - Parameters:
         ///   - decoder: the decoder to use
         public init(from decoder: any Decoder) throws {
-
             let container = try decoder.container(keyedBy: CodingKeys.self)
             deviceCode = try container.decode(String.self, forKey: .deviceCode)
             userCode = try container.decode(String.self, forKey: .userCode)
-            expiresIn = try container.decodeIfPresent(Int.self, forKey: .expiresIn)
-            interval = try container.decode(Int.self, forKey: .interval)
+            expiresIn = try container.decode(Int.self, forKey: .expiresIn)
+            interval = try container.decodeIfPresent(Int.self, forKey: .interval) ?? 5
             verificationUriComplete = try container.decodeIfPresent(String.self, forKey: .verificationUriComplete)
 
             let verification = try container.decodeIfPresent(String.self, forKey: .verificationUri)
@@ -92,6 +90,11 @@ extension OAuth {
                 verificationUri = verification
             } else {
                 verificationUri = try container.decode(String.self, forKey: .verificationUrl)
+            }
+            guard expiresIn > 0, expiresIn <= Int(Int64.max / 2),
+                  interval > 0, expiration != nil else {
+                throw DecodingError.dataCorruptedError(forKey: .expiresIn, in: container,
+                                                       debugDescription: "Device code timing must be positive and safely representable.")
             }
         }
 

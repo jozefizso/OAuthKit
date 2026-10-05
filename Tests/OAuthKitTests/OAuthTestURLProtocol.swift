@@ -22,14 +22,19 @@ actor OAuthTestRequestHandler {
 
     let statusCode: Int
     let responseData: Data?
+    let responseSequence: [Data]?
+    private var responseIndex = 0
 
     /// Initializer.
     /// - Parameters:
     ///   - statusCode: the status code to return
     ///   - responseData: optional fixed body to return
-    init(statusCode: Int = statusCodeSuccess, responseData: Data? = nil) {
+    ///   - responseSequence: optional sequence of bodies to return
+    init(statusCode: Int = statusCodeSuccess, responseData: Data? = nil,
+         responseSequence: [Data]? = nil) {
         self.statusCode = statusCode
         self.responseData = responseData
+        self.responseSequence = responseSequence
     }
 
     /// Returns a mocked URL response for the given request and status code
@@ -68,7 +73,13 @@ actor OAuthTestRequestHandler {
     /// - Returns: a tuple of response and data
     func execute(_ request: URLRequest) async throws -> (HTTPURLResponse, Data) {
         let response = response(request: request)
-        let data = data(request: request)
+        let data: Data
+        if let responseSequence, !responseSequence.isEmpty {
+            data = responseSequence[min(responseIndex, responseSequence.count - 1)]
+            responseIndex += 1
+        } else {
+            data = data(request: request)
+        }
         return (response, data)
     }
 }
@@ -127,6 +138,35 @@ class OAuthTestServerErrorURLProtocol: OAuthTestURLProtocol, @unchecked Sendable
 
     override var handler: OAuthTestRequestHandler {
         .init(statusCode: statusCodeServerError)
+    }
+}
+
+/// An URLProtocol that returns a terminal OAuth authorization error.
+class OAuthTestOAuthErrorURLProtocol: OAuthTestURLProtocol, @unchecked Sendable {
+
+    override func startLoading() {
+        let data = Data(#"{"error":"access_denied"}"#.utf8)
+        let response = HTTPURLResponse(url: request.url!, statusCode: 400, httpVersion: httpVersion, headerFields: nil)!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: data)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+}
+
+/// An URLProtocol that returns pending, slow_down, pending, then a terminal error.
+class OAuthTestSlowDownURLProtocol: OAuthTestURLProtocol, @unchecked Sendable {
+
+    private static let scriptedHandler = OAuthTestRequestHandler(
+        statusCode: statusCodeBadRequest,
+        responseSequence: [
+            Data(#"{"error":"authorization_pending"}"#.utf8),
+            Data(#"{"error":"slow_down"}"#.utf8),
+            Data(#"{"error":"authorization_pending"}"#.utf8),
+            Data(#"{"error":"access_denied"}"#.utf8)
+        ])
+
+    override var handler: OAuthTestRequestHandler {
+        Self.scriptedHandler
     }
 }
 /// Returns a successful refresh response without a replacement refresh token.
