@@ -87,12 +87,14 @@ struct CodableTests {
         #expect(decoded.allSatisfy { $0 == nil })
     }
 
-    @Test("Device codes reject invalid and unsafe timing values")
+    @Test("Device codes reject invalid and out-of-range timing values")
     func deviceCodeRejectsInvalidTiming() {
         // Arrange
         let payloads = [
             #"{"device_code":"device","user_code":"USER","verification_uri":"https://example.com/device","expires_in":10,"interval":0}"#,
             #"{"device_code":"device","user_code":"USER","verification_uri":"https://example.com/device","expires_in":10,"interval":-1}"#,
+            #"{"device_code":"device","user_code":"USER","verification_uri":"https://example.com/device","expires_in":31536001}"#,
+            #"{"device_code":"device","user_code":"USER","verification_uri":"https://example.com/device","expires_in":10,"interval":31536001}"#,
             #"{"device_code":"device","user_code":"USER","verification_uri":"https://example.com/device","expires_in":18446744073709551615}"#
         ]
 

@@ -102,6 +102,12 @@ public final class OAuth: Sendable {
         try await Task.sleep(for: duration)
     }
 
+    @ObservationIgnored
+    var devicePollingNow: @MainActor () -> ContinuousClock.Instant = { ContinuousClock().now }
+
+    @ObservationIgnored
+    var devicePollingDate: @MainActor () -> Date = { Date.now }
+
     /// Initializes the OAuth service with the specified providers and configuration options.
     /// - Parameters:
     ///   - providers: the list of oauth providers
@@ -574,8 +580,8 @@ extension OAuth {
     ///   - deviceCode: the device code to use
     func poll(provider: Provider, deviceCode: DeviceCode) async {
         let transaction = generation
-        guard deviceCode.expiresIn > 0, deviceCode.expiresIn <= Int(Int64.max / 2),
-              deviceCode.interval > 0 else {
+        guard deviceCode.expiresIn > 0, deviceCode.expiresIn <= DeviceCode.maximumTiming,
+              deviceCode.interval > 0, deviceCode.interval <= DeviceCode.maximumTiming else {
             return publish(state: .error(provider, .decoding))
         }
         guard let request = Request.token(provider: provider, deviceCode: deviceCode) else {
@@ -586,16 +592,15 @@ extension OAuth {
             return publish(state: .error(provider, .decoding))
         }
         guard transaction == generation, !Task.isCancelled else { return }
-        let remainingLifetime = expiration.timeIntervalSinceNow
+        let remainingLifetime = expiration.timeIntervalSince(devicePollingDate())
         guard remainingLifetime > 0, remainingLifetime.isFinite else {
             return publish(state: .error(provider, .expiredDeviceCode))
         }
-        let clock = ContinuousClock()
-        let deadline = clock.now.advanced(by: .seconds(Int64(remainingLifetime)))
+        let deadline = devicePollingNow().advanced(by: .seconds(remainingLifetime))
         var interval = deviceCode.interval
         while !Task.isCancelled {
             guard transaction == generation else { return }
-            let remaining = clock.now.duration(to: deadline)
+            let remaining = devicePollingNow().duration(to: deadline)
             guard remaining > .zero else {
                 publish(state: .error(provider, .expiredDeviceCode))
                 return
@@ -607,7 +612,7 @@ extension OAuth {
                 return
             }
             guard transaction == generation, !Task.isCancelled else { return }
-            guard clock.now < deadline else {
+            guard devicePollingNow() < deadline else {
                 publish(state: .error(provider, .expiredDeviceCode))
                 return
             }
@@ -618,12 +623,17 @@ extension OAuth {
                 (data, response) = try await urlSession.data(for: request, delegate: OAuthRedirectDelegate.shared)
             } catch {
                 guard transaction == generation, !Task.isCancelled else { return }
-                let doubled = interval.multipliedReportingOverflow(by: 2)
-                interval = doubled.overflow ? Int.max : doubled.partialValue
+                guard let urlError = error as? URLError, urlError.code == .timedOut else {
+                    publish(state: .error(provider, .badResponse))
+                    return
+                }
+                interval = interval > DeviceCode.maximumTiming / 2
+                    ? DeviceCode.maximumTiming
+                    : interval * 2
                 continue
             }
             guard transaction == generation, !Task.isCancelled else { return }
-            guard clock.now < deadline else {
+            guard devicePollingNow() < deadline else {
                 publish(state: .error(provider, .expiredDeviceCode))
                 return
             }
@@ -640,8 +650,9 @@ extension OAuth {
                 case "authorization_pending":
                     continue
                 case "slow_down":
-                    let increased = interval.addingReportingOverflow(5)
-                    interval = increased.overflow ? Int.max : increased.partialValue
+                    interval = interval > DeviceCode.maximumTiming - 5
+                        ? DeviceCode.maximumTiming
+                        : interval + 5
                 default:
                     publish(state: .error(provider, .oauth(error)))
                     return

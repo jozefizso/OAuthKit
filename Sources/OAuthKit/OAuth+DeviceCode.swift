@@ -14,6 +14,9 @@ extension OAuth {
     /// [Requesting a Device Code](https://www.oauth.com/playground/device-code.html)
     public struct DeviceCode: Codable, Equatable, Sendable {
 
+        /// Shared safe bound for provider-controlled timing in seconds (one year; Int32-safe).
+        static let maximumTiming = 31_536_000
+
         /// A constant for the oauth grant type.
         static let grantType = "urn:ietf:params:oauth:grant-type:device_code"
 
@@ -91,10 +94,11 @@ extension OAuth {
             } else {
                 verificationUri = try container.decode(String.self, forKey: .verificationUrl)
             }
-            guard expiresIn > 0, expiresIn <= Int(Int64.max / 2),
-                  interval > 0, expiration != nil else {
+            guard expiresIn > 0, expiresIn <= Self.maximumTiming,
+                  interval > 0, interval <= Self.maximumTiming,
+                  expiration != nil else {
                 throw DecodingError.dataCorruptedError(forKey: .expiresIn, in: container,
-                                                       debugDescription: "Device code timing must be positive and safely representable.")
+                                                       debugDescription: "Device code timing must be positive and within the supported range.")
             }
         }
 

@@ -18,20 +18,26 @@ private let statusCodeBadRequest = 400
 private let statusCodeServerError = 500
 
 /// Builds and responds to mock test requests.
-actor OAuthTestRequestHandler {
+enum OAuthTestResponseStep: Sendable {
+    case response(Data)
+    case failure(URLError.Code)
+}
 
+actor OAuthTestRequestHandler {
+    let encoder: JSONEncoder = .init()
     let statusCode: Int
     let responseData: Data?
-    let responseSequence: [Data]?
+    let responseSequence: [OAuthTestResponseStep]?
+    private var requestCount = 0
     private var responseIndex = 0
 
     /// Initializer.
     /// - Parameters:
     ///   - statusCode: the status code to return
     ///   - responseData: optional fixed body to return
-    ///   - responseSequence: optional sequence of bodies to return
+    ///   - responseSequence: optional sequence of response bodies and failures
     init(statusCode: Int = statusCodeSuccess, responseData: Data? = nil,
-         responseSequence: [Data]? = nil) {
+         responseSequence: [OAuthTestResponseStep]? = nil) {
         self.statusCode = statusCode
         self.responseData = responseData
         self.responseSequence = responseSequence
@@ -74,13 +80,30 @@ actor OAuthTestRequestHandler {
     func execute(_ request: URLRequest) async throws -> (HTTPURLResponse, Data) {
         let response = response(request: request)
         let data: Data
+        requestCount += 1
         if let responseSequence, !responseSequence.isEmpty {
-            data = responseSequence[min(responseIndex, responseSequence.count - 1)]
+            let step = responseSequence[min(responseIndex, responseSequence.count - 1)]
             responseIndex += 1
+            switch step {
+            case .response(let payload):
+                data = payload
+            case .failure(let code):
+                throw URLError(code)
+            }
+        } else if let responseData {
+            data = responseData
         } else {
-            data = data(request: request)
+            data = self.data(request: request)
         }
         return (response, data)
+    }
+
+    func requestsMade() -> Int {
+        requestCount
+    }
+    func reset() {
+        requestCount = 0
+        responseIndex = 0
     }
 }
 
@@ -159,16 +182,161 @@ class OAuthTestSlowDownURLProtocol: OAuthTestURLProtocol, @unchecked Sendable {
     private static let scriptedHandler = OAuthTestRequestHandler(
         statusCode: statusCodeBadRequest,
         responseSequence: [
-            Data(#"{"error":"authorization_pending"}"#.utf8),
-            Data(#"{"error":"slow_down"}"#.utf8),
-            Data(#"{"error":"authorization_pending"}"#.utf8),
-            Data(#"{"error":"access_denied"}"#.utf8)
+            .response(Data(#"{"error":"authorization_pending"}"#.utf8)),
+            .response(Data(#"{"error":"slow_down"}"#.utf8)),
+            .response(Data(#"{"error":"authorization_pending"}"#.utf8)),
+            .response(Data(#"{"error":"access_denied"}"#.utf8))
         ])
 
     override var handler: OAuthTestRequestHandler {
         Self.scriptedHandler
     }
+    static func requestsMade() async -> Int {
+        await scriptedHandler.requestsMade()
+    }
+    static func reset() async {
+        await scriptedHandler.reset()
+    }
 }
+
+/// An URLProtocol that times out once and then returns a terminal OAuth error.
+class OAuthTestTimedOutURLProtocol: OAuthTestURLProtocol, @unchecked Sendable {
+
+    private static let scriptedHandler = OAuthTestRequestHandler(
+        statusCode: statusCodeBadRequest,
+        responseSequence: [
+            .failure(.timedOut),
+            .response(Data(#"{"error":"access_denied"}"#.utf8))
+        ])
+
+    override var handler: OAuthTestRequestHandler {
+        Self.scriptedHandler
+    }
+
+    static func requestsMade() async -> Int {
+        await scriptedHandler.requestsMade()
+    }
+    static func reset() async {
+        await scriptedHandler.reset()
+    }
+}
+
+
+/// Returns a successful token response and counts requests for deterministic tests.
+class OAuthTestCountingTokenURLProtocol: OAuthTestURLProtocol, @unchecked Sendable {
+
+    private static let scriptedHandler = OAuthTestRequestHandler(
+        responseData: Data(#"{"access_token":"access-token","token_type":"Bearer"}"#.utf8))
+
+    override var handler: OAuthTestRequestHandler {
+        Self.scriptedHandler
+    }
+
+    static func requestsMade() async -> Int {
+        await scriptedHandler.requestsMade()
+    }
+
+    static func reset() async {
+        await scriptedHandler.reset()
+    }
+}
+
+/// An URLProtocol that returns TLS failures and counts requests.
+class OAuthTestTLSFailureURLProtocol: OAuthTestURLProtocol, @unchecked Sendable {
+
+    private static let scriptedHandler = OAuthTestRequestHandler(
+        responseSequence: [.failure(.secureConnectionFailed)])
+
+    override var handler: OAuthTestRequestHandler {
+        Self.scriptedHandler
+    }
+
+    static func requestsMade() async -> Int {
+        await scriptedHandler.requestsMade()
+    }
+    static func reset() async {
+        await scriptedHandler.reset()
+    }
+}
+
+private actor OAuthTestHeldResponseGate {
+    private var requestStarted = false
+    private var requestCount = 0
+    private var startWaiter: CheckedContinuation<Void, Never>?
+    private var responseWaiter: CheckedContinuation<Data, Never>?
+    private var releasedResponse: Data?
+
+    func waitForRequest() async {
+        guard !requestStarted else { return }
+        await withCheckedContinuation { startWaiter = $0 }
+    }
+
+    func holdResponse() async -> Data {
+        requestStarted = true
+        requestCount += 1
+        startWaiter?.resume()
+        startWaiter = nil
+        if let releasedResponse {
+            self.releasedResponse = nil
+            return releasedResponse
+        }
+        return await withCheckedContinuation { responseWaiter = $0 }
+    }
+
+    func release(_ data: Data) {
+        if let responseWaiter {
+            self.responseWaiter = nil
+            responseWaiter.resume(returning: data)
+        } else {
+            releasedResponse = data
+        }
+    }
+
+    func requestsMade() -> Int {
+        requestCount
+    }
+
+    func reset() {
+        requestStarted = false
+        requestCount = 0
+        startWaiter = nil
+        responseWaiter = nil
+        releasedResponse = nil
+    }
+}
+
+/// An URLProtocol that withholds a successful token response until released by the test.
+class OAuthTestHeldResponseURLProtocol: OAuthTestURLProtocol, @unchecked Sendable {
+
+    private static let gate = OAuthTestHeldResponseGate()
+
+    override func startLoading() {
+        Task {
+            let data = await Self.gate.holdResponse()
+            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: httpVersion, headerFields: nil)!
+            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: data)
+            client?.urlProtocolDidFinishLoading(self)
+        }
+    }
+
+    static func reset() async {
+        await gate.reset()
+    }
+
+    static func waitForRequest() async {
+        await gate.waitForRequest()
+    }
+
+    static func release(_ data: Data) async {
+        await gate.release(data)
+    }
+
+    static func requestsMade() async -> Int {
+        await gate.requestsMade()
+    }
+}
+
 /// Returns a successful refresh response without a replacement refresh token.
 final class OAuthRefreshTokenOmittedURLProtocol: OAuthTestURLProtocol, @unchecked Sendable {
     override var handler: OAuthTestRequestHandler {

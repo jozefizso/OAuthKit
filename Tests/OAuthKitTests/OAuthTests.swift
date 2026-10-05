@@ -387,7 +387,7 @@ final class OAuthTests {
         // Device Code Polling
         let deviceCode: OAuth.DeviceCode = .init(deviceCode: .secureRandom(), userCode: .secureRandom(), verificationUri: "https://example.com", expiresIn: 2, interval: 1)
         await oauth.poll(provider: provider, deviceCode: deviceCode)
-        #expect(oauth.state == .error(provider, .expiredDeviceCode))
+        #expect(oauth.state == .error(provider, .badResponse))
     }
 
     /// Tests the PKCE request parameters.
@@ -459,6 +459,7 @@ final class OAuthTests {
     @Test("slow_down adds five seconds and pending keeps the longer interval")
     func devicePollingPersistsSlowDownInterval() async throws {
         // Arrange
+        await OAuthTestSlowDownURLProtocol.reset()
         let configuration: URLSessionConfiguration = .ephemeral
         configuration.protocolClasses = [OAuthTestSlowDownURLProtocol.self]
         let session = URLSession(configuration: configuration)
@@ -480,6 +481,168 @@ final class OAuthTests {
         // Assert
         #expect(poller.state == .error(provider, .oauth("access_denied")))
         #expect(delays == [.seconds(1), .seconds(1), .seconds(6), .seconds(6)])
+        let requestCount = await OAuthTestSlowDownURLProtocol.requestsMade()
+        #expect(requestCount == 4)
+    }
+
+    @Test("Fractional device expiry preserves success and prevents late requests")
+    func fractionalDeviceExpiryBoundsRequests() async throws {
+        // Arrange
+        let configuration: URLSessionConfiguration = .ephemeral
+        configuration.protocolClasses = [OAuthTestCountingTokenURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        let successfulPoller = OAuth(providers: [provider], options: [
+            .applicationTag: "oauthkit.test." + .secureRandom(),
+            .urlSession: session
+        ])
+        await OAuthTestCountingTokenURLProtocol.reset()
+        let successfulCode = OAuth.DeviceCode(deviceCode: .secureRandom(), userCode: "USER",
+                                               verificationUri: "https://example.com/device",
+                                               expiresIn: 10, interval: 5)
+        let successfulExpiration = successfulCode.expiration!
+        var successfulInstant = ContinuousClock().now
+        successfulPoller.devicePollingDate = { successfulExpiration.addingTimeInterval(-0.5) }
+        successfulPoller.devicePollingNow = { successfulInstant }
+        var successfulDelays = [Duration]()
+        successfulPoller.devicePollingSleep = { delay in
+            successfulDelays.append(delay)
+            successfulInstant = successfulInstant.advanced(by: .milliseconds(250))
+        }
+
+        // Act
+        await successfulPoller.poll(provider: provider, deviceCode: successfulCode)
+
+        // Assert
+        if case .authorized = successfulPoller.state {
+            #expect(true)
+        } else {
+            #expect(Bool(false))
+        }
+        #expect(successfulDelays == [.milliseconds(500)])
+        let successfulRequestCount = await OAuthTestCountingTokenURLProtocol.requestsMade()
+        #expect(successfulRequestCount == 1)
+
+        // Arrange another request whose wait reaches the fractional deadline exactly.
+        await OAuthTestCountingTokenURLProtocol.reset()
+        let expiredPoller = OAuth(providers: [provider], options: [
+            .applicationTag: "oauthkit.test." + .secureRandom(),
+            .urlSession: session
+        ])
+        let expiredCode = OAuth.DeviceCode(deviceCode: .secureRandom(), userCode: "USER",
+                                           verificationUri: "https://example.com/device",
+                                           expiresIn: 10, interval: 5)
+        let expiredExpiration = expiredCode.expiration!
+        var expiredInstant = ContinuousClock().now
+        expiredPoller.devicePollingDate = { expiredExpiration.addingTimeInterval(-0.5) }
+        expiredPoller.devicePollingNow = { expiredInstant }
+        expiredPoller.devicePollingSleep = { delay in
+            expiredInstant = expiredInstant.advanced(by: delay)
+        }
+
+        // Act
+        await expiredPoller.poll(provider: provider, deviceCode: expiredCode)
+
+        // Assert
+        #expect(expiredPoller.state == .error(provider, .expiredDeviceCode))
+        let expiredRequestCount = await OAuthTestCountingTokenURLProtocol.requestsMade()
+        #expect(expiredRequestCount == 0)
+    }
+
+    @Test("A held token response arriving after expiry is discarded")
+    func heldTokenResponseCannotOutliveDeviceExpiry() async throws {
+        // Arrange
+        await OAuthTestHeldResponseURLProtocol.reset()
+        let configuration: URLSessionConfiguration = .ephemeral
+        configuration.protocolClasses = [OAuthTestHeldResponseURLProtocol.self]
+        let poller = OAuth(providers: [provider], options: [
+            .applicationTag: "oauthkit.test." + .secureRandom(),
+            .urlSession: URLSession(configuration: configuration)
+        ])
+        let deviceCode = OAuth.DeviceCode(deviceCode: .secureRandom(), userCode: "USER",
+                                          verificationUri: "https://example.com/device",
+                                          expiresIn: 10, interval: 5)
+        let expiration = deviceCode.expiration!
+        var now = ContinuousClock().now
+        poller.devicePollingDate = { expiration.addingTimeInterval(-0.5) }
+        poller.devicePollingNow = { now }
+        poller.devicePollingSleep = { _ in
+            now = now.advanced(by: .milliseconds(250))
+        }
+        let polling = Task { await poller.poll(provider: provider, deviceCode: deviceCode) }
+
+        // Act
+        await OAuthTestHeldResponseURLProtocol.waitForRequest()
+        now = now.advanced(by: .milliseconds(300))
+        await OAuthTestHeldResponseURLProtocol.release(Data(#"{"access_token":"late-token","token_type":"Bearer"}"#.utf8))
+        await polling.value
+
+        // Assert
+        #expect(poller.state == .error(provider, .expiredDeviceCode))
+        let stored: OAuth.Authorization? = try poller.keychain.get(key: provider.id)
+        #expect(stored == nil)
+        let requestCount = await OAuthTestHeldResponseURLProtocol.requestsMade()
+        #expect(requestCount == 1)
+    }
+
+    @Test("Only timed-out requests back off; TLS errors terminate")
+    func pollingRetriesOnlyTimeouts() async throws {
+        // Arrange timeout response sequence.
+        await OAuthTestTimedOutURLProtocol.reset()
+        let timeoutConfiguration: URLSessionConfiguration = .ephemeral
+        timeoutConfiguration.protocolClasses = [OAuthTestTimedOutURLProtocol.self]
+        let timeoutPoller = OAuth(providers: [provider], options: [
+            .applicationTag: "oauthkit.test." + .secureRandom(),
+            .urlSession: URLSession(configuration: timeoutConfiguration)
+        ])
+        var timeoutNow = ContinuousClock().now
+        timeoutPoller.devicePollingDate = { Date.now.addingTimeInterval(20) }
+        timeoutPoller.devicePollingNow = { timeoutNow }
+        var timeoutDelays = [Duration]()
+        timeoutPoller.devicePollingSleep = { delay in
+            timeoutDelays.append(delay)
+            timeoutNow = timeoutNow.advanced(by: delay)
+        }
+        let timeoutCode = OAuth.DeviceCode(deviceCode: .secureRandom(), userCode: "USER",
+                                           verificationUri: "https://example.com/device",
+                                           expiresIn: 30, interval: 1)
+
+        // Act
+        await timeoutPoller.poll(provider: provider, deviceCode: timeoutCode)
+
+        // Assert
+        #expect(timeoutPoller.state == .error(provider, .oauth("access_denied")))
+        #expect(timeoutDelays == [.seconds(1), .seconds(2)])
+        let timeoutRequestCount = await OAuthTestTimedOutURLProtocol.requestsMade()
+        #expect(timeoutRequestCount == 2)
+
+        // Arrange TLS failure response.
+        await OAuthTestTLSFailureURLProtocol.reset()
+        let tlsConfiguration: URLSessionConfiguration = .ephemeral
+        tlsConfiguration.protocolClasses = [OAuthTestTLSFailureURLProtocol.self]
+        let tlsPoller = OAuth(providers: [provider], options: [
+            .applicationTag: "oauthkit.test." + .secureRandom(),
+            .urlSession: URLSession(configuration: tlsConfiguration)
+        ])
+        var tlsNow = ContinuousClock().now
+        tlsPoller.devicePollingDate = { Date.now.addingTimeInterval(20) }
+        tlsPoller.devicePollingNow = { tlsNow }
+        var tlsDelays = [Duration]()
+        tlsPoller.devicePollingSleep = { delay in
+            tlsDelays.append(delay)
+            tlsNow = tlsNow.advanced(by: delay)
+        }
+        let tlsCode = OAuth.DeviceCode(deviceCode: .secureRandom(), userCode: "USER",
+                                       verificationUri: "https://example.com/device",
+                                       expiresIn: 30, interval: 1)
+
+        // Act
+        await tlsPoller.poll(provider: provider, deviceCode: tlsCode)
+
+        // Assert
+        #expect(tlsPoller.state == .error(provider, .badResponse))
+        #expect(tlsDelays == [.seconds(1)])
+        let tlsRequestCount = await OAuthTestTLSFailureURLProtocol.requestsMade()
+        #expect(tlsRequestCount == 1)
     }
 
     /// Tests to make sure the PKCE code verifier and challenge are correct.
