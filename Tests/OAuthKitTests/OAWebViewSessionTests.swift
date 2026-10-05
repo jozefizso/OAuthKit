@@ -127,8 +127,33 @@ struct OAWebViewSessionTests {
         #expect(oauth.activeAuthorizationURL == nil)
     }
 
+    @Test("The system session rejects HTTP loopback redirects")
+    func whenUsingHTTPLoopbackCallback() {
+        let provider = OAuth.Provider(
+            id: "loopback-session-test",
+            authorizationURL: URL(string: "https://auth.example/authorize")!,
+            accessTokenURL: URL(string: "https://auth.example/token")!,
+            clientID: "test-client",
+            clientSecret: nil,
+            redirectURI: "http://127.0.0.1:49152/oauth/return"
+        )
+        let oauth = makeOAuth(provider: provider)
+        oauth.authorize(provider: provider)
+        var createdSession = false
+        let view = OAWebView(oauth: oauth, sessionFactory: { _, _, _ in
+            createdSession = true
+            return OAuthExternalAuthenticationSessionFake()
+        })
+
+        view.start(provider: provider, anchor: makePresentationAnchor())
+        #expect(!createdSession)
+        #expect(oauth.state == .empty)
+        #expect(oauth.activeAuthorizationURL == nil)
+    }
+
     @Test("HTTPS redirects use the registered host and path callback")
     func whenUsingHTTPSCallback() {
+        guard #available(iOS 17.4, macOS 14.4, visionOS 1.1, *) else { return }
         let provider = OAuth.Provider(
             id: "https-session-test",
             authorizationURL: URL(string: "https://auth.example/authorize")!,

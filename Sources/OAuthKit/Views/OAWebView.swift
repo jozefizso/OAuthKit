@@ -24,8 +24,14 @@ protocol OAuthExternalAuthenticationSession: AnyObject {
 
 extension ASWebAuthenticationSession: OAuthExternalAuthenticationSession {}
 
+enum OAuthExternalAuthenticationCallback {
+    case customScheme(String)
+    case https(host: String, path: String)
+}
+
 typealias OAuthExternalAuthenticationSessionFactory =
-    @MainActor (URL, ASWebAuthenticationSession.Callback, @escaping (URL?, Error?) -> Void) -> any OAuthExternalAuthenticationSession
+    @MainActor (URL, OAuthExternalAuthenticationCallback, @escaping (URL?, Error?) -> Void) -> any OAuthExternalAuthenticationSession
+
 
 /// Presents OAuth authorization in the operating system's trusted external user agent.
 @MainActor
@@ -39,7 +45,30 @@ public struct OAWebView: View {
 
     public init(oauth: OAuth) {
         self.init(oauth: oauth, sessionFactory: { url, callback, completion in
-            ASWebAuthenticationSession(url: url, callback: callback, completionHandler: completion)
+            switch callback {
+            case .https(let host, let path):
+                if #available(iOS 17.4, macOS 14.4, visionOS 1.1, *) {
+                    return ASWebAuthenticationSession(
+                        url: url,
+                        callback: .https(host: host, path: path),
+                        completionHandler: completion
+                    )
+                }
+                return UnsupportedExternalAuthenticationSession()
+            case .customScheme(let scheme):
+                if #available(iOS 17.4, macOS 14.4, visionOS 1.1, *) {
+                    return ASWebAuthenticationSession(
+                        url: url,
+                        callback: .customScheme(scheme),
+                        completionHandler: completion
+                    )
+                }
+                return ASWebAuthenticationSession(
+                    url: url,
+                    callbackURLScheme: scheme,
+                    completionHandler: completion
+                )
+            }
         })
     }
 
@@ -93,14 +122,18 @@ public struct OAWebView: View {
               let redirectComponents = URLComponents(string: redirect),
               let scheme = redirectComponents.scheme,
               let authorizationURL = oauth.activeAuthorizationURL else { return }
-
-        let callback: ASWebAuthenticationSession.Callback
+        let callback: OAuthExternalAuthenticationCallback
         if scheme.lowercased() == "https" {
-            guard let host = redirectComponents.host else {
+            guard #available(iOS 17.4, macOS 14.4, visionOS 1.1, *),
+                  let host = redirectComponents.host else {
                 oauth.cancelAuthorization(generation: generation)
                 return
             }
             callback = .https(host: host, path: redirectComponents.path)
+        } else if scheme.lowercased() == "http" {
+            // ASWebAuthenticationSession has no HTTP callback matcher, including loopback URLs.
+            oauth.cancelAuthorization(generation: generation)
+            return
         } else {
             callback = .customScheme(scheme)
         }
@@ -141,6 +174,15 @@ public struct OAWebView: View {
         session = nil
         sessionGeneration = nil
     }
+}
+
+@MainActor
+private final class UnsupportedExternalAuthenticationSession: OAuthExternalAuthenticationSession {
+    var prefersEphemeralWebBrowserSession = false
+    var presentationContextProvider: (any ASWebAuthenticationPresentationContextProviding)?
+
+    func start() -> Bool { false }
+    func cancel() {}
 }
 
 @MainActor

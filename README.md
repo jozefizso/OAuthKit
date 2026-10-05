@@ -160,6 +160,12 @@ struct ContentView: View {
 }
 ```
 
+### Native system-browser redirect support
+
+On iOS, macOS, and visionOS, `OAWebView` uses Apple's [`ASWebAuthenticationSession.Callback`](https://developer.apple.com/documentation/authenticationservices/aswebauthenticationsession/callback), which matches custom URL schemes or HTTPS callbacks by host and path. It does not provide an HTTP callback matcher, including for `localhost` or loopback IP redirects. `OAWebView` therefore rejects an HTTP redirect and ends the pending authorization transaction rather than treating `http` as a custom scheme. Use a registered custom scheme or HTTPS redirect with this built-in session, or implement a separate loopback listener/system-browser integration; device authorization is another option when supported by the provider.
+
+The HTTPS callback matcher requires iOS/iPadOS 17.4, macOS 14.4, or visionOS 1.1; on earlier supported deployment targets, `OAWebView` ends the transaction instead of using an unsafe scheme-only match. Custom-scheme redirects continue to use the legacy system-session initializer there.
+
 ## OAuthKit Configuration
 By default, the easiest way to configure OAuthKit is to simply drop an `oauth.json` file into your main bundle and it will get automatically loaded into your swift application and available as an [Environment](https://developer.apple.com/documentation/swiftui/environment) property wrapper. You can find an example `oauth.json` file [here](https://github.com/codefiesta/OAuthKit/blob/main/Tests/OAuthKitTests/Resources/oauth.json). OAuthKit provides flexible constructor options that allows developers to customize  how their oauth client is initialized and what features they want to implement. See the [oauth.init(\_:bundle:options)](https://codefiesta.github.io/OAuthKit/documentation/oauthkit/oauth) method for details.
 
