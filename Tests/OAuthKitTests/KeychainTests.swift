@@ -14,7 +14,7 @@ final class KeychainTests {
     let keychain: Keychain
 
     deinit {
-        keychain.clear()
+        try? keychain.clear()
     }
 
     /// Initializer.
@@ -39,11 +39,32 @@ final class KeychainTests {
         #expect(token.scope == found.scope)
         #expect(token.type == found.type)
 
-        let keys = keychain.keys
-        debugPrint("🔐", keys)
+        let keys = try keychain.keys
         #expect(keys.count == 1)
 
-        let deleted = keychain.delete(key: key)
+        let deleted = try keychain.delete(key: key)
         #expect(deleted == true)
+    }
+    /// Arrange two application tags with an overlapping prefix, then clear one and assert the other remains readable.
+    @Test("Clearing an exact service does not clear an overlapping service")
+    func clearingOverlappingNamespace() throws {
+        // Arrange
+        let base = "oauthkit.test.\(.secureRandom())"
+        let first: Keychain = .init(base)
+        let overlapping: Keychain = .init(base + ".child")
+        try first.set("first", for: "token")
+        try overlapping.set("child", for: "token")
+        defer {
+            try? first.clear()
+            try? overlapping.clear()
+        }
+
+        // Act
+        let cleared = try first.clear()
+
+        // Assert
+        #expect(cleared)
+        let surviving: String? = try overlapping.get(key: "token")
+        #expect(surviving == "child")
     }
 }

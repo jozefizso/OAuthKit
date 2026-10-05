@@ -10,6 +10,12 @@ import Foundation
 import Security
 #endif
 
+#if canImport(Security)
+/// Errors returned by Keychain storage operations.
+enum KeychainError: Error {
+    case securityStatus(OSStatus)
+}
+#endif
 /// A helper class used to interact with Keychain storage access. Wraps all storage write operations with threadsafe locks.
 class Keychain: @unchecked Sendable {
 
@@ -34,9 +40,14 @@ class Keychain: @unchecked Sendable {
         #endif
     }
 
-    /// Queries the keychain for keys.
+    /// Queries the keychain for keys; errors are not converted into an empty result.
     var keys: [String] {
-        storage?.keys ?? []
+        get throws {
+            guard let storage else { return [] }
+            lock.lock()
+            defer { lock.unlock() }
+            return try storage.keys
+        }
     }
 
     /// Sets the value for the specified key.
@@ -69,25 +80,21 @@ class Keychain: @unchecked Sendable {
         return value
     }
 
-    /// Clears the keychain
-    /// - Returns: true if values were cleared, otherwise false.
+    /// Clears only this keychain's namespace.
+    /// - Returns: true after confirmed deletion, false if storage is unavailable.
     @discardableResult
-    func clear() -> Bool {
+    func clear() throws -> Bool {
         lock.lock()
         defer { lock.unlock() }
-        return storage?.clear() ?? false
+        return try storage?.clear() ?? false
     }
 
-    /// Deletes the value for the specified key.
-    /// - Parameter key: the key to delete
-    /// - Returns: true if able to delete from the keychain, otherwise false
+    /// Deletes the value for the specified key and propagates keychain failures.
     @discardableResult
-    func delete(key: String) -> Bool {
+    func delete(key: String) throws -> Bool {
         lock.lock()
         defer { lock.unlock() }
-
         guard let storage else { return false }
-        let account = storage.accountKey(key)
-        return storage.delete(key: account)
+        return try storage.delete(key: storage.accountKey(key))
     }
 }

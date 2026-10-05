@@ -10,59 +10,30 @@ import Foundation
 import Security
 #endif
 
-/// The default account  to use.
+/// The default account to use.
 private let defaultAccount = "oauthkit"
 /// The default token identifier suffix.
 private let tokenIdentifier = "oauth-token"
 
 extension Keychain {
 
-    // Provides the storage protocols used for storing sensitive data.
-    // The storage operations should all be wrapped in a locking
-    // mechanism to prevent any potential data races.
+    /// Storage operations used for sensitive data.
     protocol Storage {
-
         /// The owning account identifier.
-        /// - Parameter account: a key indicating the account owner. Ideally, use the application identifier for this value.
         init(account: String)
-
-        /// The account owner of this keychain storage.
         var account: String { get }
-
-        /// Returns a list of keys owned by this account.
-        var keys: [String] { get }
-
-        /// Sets the data for the specified key
-        /// - Parameters:
-        ///   - data: the data to store for the specified key
-        ///   - key: the key to use for the data
-        /// - Returns: true if able to set the data, otherwise false
+        /// Returns keys in this account; query failures are thrown.
+        var keys: [String] { get throws }
         func set(_ data: Data, for key: String) throws -> Bool
-
-        /// Fetches storeed data from the data store with the specified key.
-        /// - Parameter key: the keychain key
-        /// - Returns: the data for the specified key or nil if not found
         func get(key: String) throws -> Data?
-
-        /// Deletes the value for the specified key.
-        /// - Parameter key: the key to delete
-        /// - Returns: true if able to delete from the storage, otherwise false
-        func delete(key: String) -> Bool
-
-        /// Clears all values and keys for the current account.
-        /// - Returns: true if values were cleared, otherwise false.
-        func clear() -> Bool
-
-        /// Builds the combined account key by prefixing the specified key with the account.
-        /// - Parameter key: the key to prefix.
-        /// - Returns: the unique account key to use
+        func delete(key: String) throws -> Bool
+        func clear() throws -> Bool
         func accountKey(_ key: String) -> String
     }
 
     #if canImport(Security)
     /// The default token storage used by Apple ecosystems.
     struct DefaultStorage: Storage {
-
         var account: String = defaultAccount
 
         init(account: String) {
@@ -70,113 +41,89 @@ extension Keychain {
         }
 
         var keys: [String] {
-            var results = [String]()
-            let query: [String: Any] = [
-                kSecClass as String: kSecClassGenericPassword,
-                kSecReturnAttributes as String: true,
-                kSecMatchLimit as String: kSecMatchLimitAll
-            ]
-
-            var result: AnyObject?
-            let status = withUnsafeMutablePointer(to: &result) { pointer in
-                SecItemCopyMatching(query as CFDictionary, UnsafeMutablePointer(pointer))
-            }
-
-            guard status == noErr else { return results }
-
-            if let items = result as? [[String: Any]] {
-                for item in items {
-                    if let key = item[kSecAttrAccount as String] as? String {
-                        results.append(key)
-                    }
+            get throws {
+                let query: [String: Any] = [
+                    kSecClass as String: kSecClassGenericPassword,
+                    kSecAttrService as String: account,
+                    kSecReturnAttributes as String: true,
+                    kSecMatchLimit as String: kSecMatchLimitAll
+                ]
+                var result: AnyObject?
+                let status = withUnsafeMutablePointer(to: &result) { pointer in
+                    SecItemCopyMatching(query as CFDictionary, UnsafeMutablePointer(pointer))
                 }
+                if status == errSecItemNotFound { return [] }
+                guard status == errSecSuccess else { throw KeychainError.securityStatus(status) }
+                guard let items = result as? [[String: Any]] else { return [] }
+                return items.compactMap { $0[kSecAttrAccount as String] as? String }.sorted()
             }
-            return results.filter{ $0.starts(with: account)}.sorted{ $0 < $1}
         }
 
-        /// Sets the value for the specified key.
-        /// - Parameters:
-        ///   - value: the value to store
-        ///   - key: the key to use
-        /// - Returns: true if able to set the value, otherwise false
+        /// Stores data under an exact service and deterministic account key.
         @discardableResult
         func set(_ data: Data, for key: String) throws -> Bool {
             assert(key.isNotEmpty, "❌ The keychain key cannot be empty.")
-
-            let account = accountKey(key)
-            delete(key: account)
-
-            let query: [String: Any] = [
+            _ = try delete(key: accountKey(key))
+            let item: [String: Any] = [
                 kSecClass as String: kSecClassGenericPassword,
-                kSecAttrAccount as String: account,
+                kSecAttrService as String: account,
+                kSecAttrAccount as String: accountKey(key),
                 kSecValueData as String: data
             ]
-
-            let status = SecItemAdd(query as CFDictionary, nil)
-            return status == errSecSuccess
+            let status = SecItemAdd(item as CFDictionary, nil)
+            guard status == errSecSuccess else { throw KeychainError.securityStatus(status) }
+            return true
         }
 
-        /// Fetches storeed data from the data store with the specified key.
-        /// - Parameter key: the keychain key
-        /// - Returns: the data for the specified key or nil if not found
+        /// Fetches data for one deterministic key in this exact service.
         func get(key: String) throws -> Data? {
-
-            let account = accountKey(key)
-
             let query: [String: Any] = [
                 kSecClass as String: kSecClassGenericPassword,
+                kSecAttrService as String: account,
                 kSecMatchLimit as String: kSecMatchLimitOne,
-                kSecAttrAccount as String: account,
+                kSecAttrAccount as String: accountKey(key),
                 kSecReturnData as String: true
             ]
-
             var result: AnyObject?
             let status = withUnsafeMutablePointer(to: &result) { pointer in
                 SecItemCopyMatching(query as CFDictionary, UnsafeMutablePointer(pointer))
             }
-
-            guard status == noErr, let data = result as? Data else {
-                return nil
-            }
-
-            return data
+            if status == errSecItemNotFound { return nil }
+            guard status == errSecSuccess else { throw KeychainError.securityStatus(status) }
+            return result as? Data
         }
 
-        /// Clears all values and keys for the current account.
-        /// - Returns: true if values were cleared, otherwise false.
+        /// Deletes all generic-password items in this exact service namespace.
         @discardableResult
-        func clear() -> Bool {
-
-            var results: [Bool] = []
-            for key in keys {
-                results.append(delete(key: key))
-            }
-
-            guard results.isNotEmpty else { return true }
-            return results.allSatisfy{ $0 == true }
-        }
-
-        /// Deletes the value for the specified key.
-        /// - Parameter key: the key to delete
-        /// - Returns: true if able to delete from the storage, otherwise false
-        @discardableResult
-        func delete(key: String) -> Bool {
+        func clear() throws -> Bool {
             let query: [String: Any] = [
                 kSecClass as String: kSecClassGenericPassword,
+                kSecAttrService as String: account
+            ]
+            let status = SecItemDelete(query as CFDictionary)
+            if status == errSecSuccess || status == errSecItemNotFound { return true }
+            throw KeychainError.securityStatus(status)
+        }
+
+        /// Deletes one item in this exact service namespace.
+        @discardableResult
+        func delete(key: String) throws -> Bool {
+            let query: [String: Any] = [
+                kSecClass as String: kSecClassGenericPassword,
+                kSecAttrService as String: account,
                 kSecAttrAccount as String: key
             ]
             let status = SecItemDelete(query as CFDictionary)
-            return status == noErr
+            if status == errSecSuccess { return true }
+            if status == errSecItemNotFound { return false }
+            throw KeychainError.securityStatus(status)
         }
     }
     #endif
 }
 
 extension Keychain.Storage {
-
-    /// Builds the combined account key by prefixing the specified key with the account.
-    /// - Parameter key: the key to prefix.
-    /// - Returns: the unique account key to use
+    /// Builds a deterministic account key for the specified OAuth key.
     func accountKey(_ key: String) -> String {
         account + "." + key + "." + tokenIdentifier
     }
