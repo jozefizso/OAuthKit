@@ -70,6 +70,7 @@ final class KeychainTests {
         let surviving: String? = try overlapping.get(key: "token")
         #expect(surviving == "child")
     }
+#if canImport(Security)
     /// Distinguish an empty namespace from a failed Security query and ensure delete failures surface.
     @Test("Keychain query and deletion failures are actionable")
     func queryAndDeletionFailuresPropagate() throws {
@@ -115,4 +116,5 @@ final class KeychainTests {
         storage.statusOverride = nil
         #expect(try storage.get(key: "provider") == oldValue)
     }
+#endif
 }
