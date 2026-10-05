@@ -89,7 +89,7 @@ final class OAuthTests {
         let key = provider.id
         let token: OAuth.Token = .init(accessToken: .secureRandom(), refreshToken: .secureRandom(), expiresIn: 3600, scope: "email", type: "Bearer")
         let auth: OAuth.Authorization = .init(issuer: provider.id, token: token)
-        let inserted = try! keychain.set(auth, for: key)
+        let inserted = try keychain.set(auth, for: key)
         #expect(inserted == true)
 
         let options: [OAuth.Option: Any] = [
@@ -217,7 +217,7 @@ final class OAuthTests {
         #expect(request!.url!.absoluteString.contains("grant_type=refresh_token"))
         #expect(request!.url!.absoluteString.contains("refresh_token=\(token.refreshToken!)"))
         let auth: OAuth.Authorization = .init(issuer: provider.id, token: token)
-        try! keychain.set(auth, for: provider.id)
+        try keychain.set(auth, for: provider.id)
         oauth.authorize(provider: provider, grantType: .refreshToken)
         let result = await waitForAuthorization(oauth)
         #expect(result == true)
@@ -228,7 +228,7 @@ final class OAuthTests {
         let key = provider.id
         let token: OAuth.Token = .init(accessToken: .secureRandom(), refreshToken: .secureRandom(), expiresIn: 0, scope: "email", type: "Bearer")
         let auth: OAuth.Authorization = .init(issuer: provider.id, token: token)
-        let inserted = try! keychain.set(auth, for: key)
+        let inserted = try keychain.set(auth, for: key)
         #expect(inserted == true)
 
         let options: [OAuth.Option: Any] = [
@@ -266,7 +266,7 @@ final class OAuthTests {
         // Refresh Token
         let token: OAuth.Token = .init(accessToken: .secureRandom(), refreshToken: .secureRandom(), expiresIn: 0, scope: "email", type: "Bearer")
         let auth: OAuth.Authorization = .init(issuer: provider.id, token: token)
-        try! oauth.keychain.set(auth, for: provider.id)
+        try oauth.keychain.set(auth, for: provider.id)
         await oauth.refreshToken(provider: provider)
         #expect(oauth.state == .error(provider, .decoding))
         try oauth.clear()
@@ -307,7 +307,7 @@ final class OAuthTests {
         // Refresh Token
         let token: OAuth.Token = .init(accessToken: .secureRandom(), refreshToken: .secureRandom(), expiresIn: 0, scope: "email", type: "Bearer")
         let auth: OAuth.Authorization = .init(issuer: provider.id, token: token)
-        try! oauth.keychain.set(auth, for: provider.id)
+        try oauth.keychain.set(auth, for: provider.id)
         await oauth.refreshToken(provider: provider)
         #expect(oauth.state == .error(provider, .badResponse))
         try oauth.clear()

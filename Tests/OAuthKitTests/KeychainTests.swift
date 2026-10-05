@@ -32,10 +32,10 @@ final class KeychainTests {
         let key = "Github"
         let token: OAuth.Token = .init(accessToken: .secureRandom(), refreshToken: .secureRandom(), expiresIn: 3600, scope: "email", type: "Bearer")
 
-        let inserted = try! keychain.set(token, for: key)
+        let inserted = try keychain.set(token, for: key)
         #expect(inserted == true)
 
-        let found: OAuth.Token = try! keychain.get(key: key)!
+        let found: OAuth.Token = try #require(try keychain.get(key: key))
 
         #expect(token.accessToken.isNotEmpty)
         #expect(token.accessToken == found.accessToken)
