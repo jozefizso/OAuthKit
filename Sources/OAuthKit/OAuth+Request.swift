@@ -48,7 +48,8 @@ extension OAuth {
         ///   - grantType: the grant type
         /// - Returns: an `/authorization` url request
         static func auth(provider: Provider, grantType: GrantType) -> URLRequest? {
-            guard var urlComponents = URLComponents(string: provider.authorizationURL.absoluteString) else { return nil }
+            guard var urlComponents = URLComponents(string: provider.authorizationURL.absoluteString),
+                  !hasCredentialQueryParameters(provider.authorizationURL) else { return nil }
             guard let queryItems = buildQueryItems(provider: provider, grantType: grantType) else { return nil }
             urlComponents.queryItems = queryItems
             guard let url = urlComponents.url else { return nil }
@@ -56,14 +57,8 @@ extension OAuth {
         }
 
         static func refresh(provider: Provider, token: Token) -> URLRequest? {
-            guard var urlComponents = URLComponents(string: provider.authorizationURL.absoluteString),
-                  let queryItems = buildQueryItems(provider: provider, token: token) else { return nil }
-            urlComponents.queryItems = queryItems
-            guard let url = urlComponents.url else { return nil }
-            var request = URLRequest(url: url)
-            request.httpMethod = httpPost
-            request.setValue(jsonMimeType, forHTTPHeaderField: httpAcceptHeaderField)
-            return request
+            guard let queryItems = buildQueryItems(provider: provider, token: token) else { return nil }
+            return tokenRequest(provider: provider, queryItems: queryItems)
         }
 
         /// Builds a `/token` request for exchanging the given code for a token.
@@ -94,7 +89,8 @@ extension OAuth {
         ///   - provider: the oauth provider
         /// - Returns: the url request
         static func device(provider: Provider) -> URLRequest? {
-            guard let deviceCodeURL = provider.deviceCodeURL else { return nil }
+            guard let deviceCodeURL = provider.deviceCodeURL,
+                  !hasCredentialQueryParameters(deviceCodeURL) else { return nil }
             let queryItems = [
                 URLQueryItem(key: .clientID, value: provider.clientID),
                 URLQueryItem(key: .scope, value: provider.scope?.joined(separator: " "))
@@ -253,6 +249,7 @@ extension OAuth {
         }
 
         private static func tokenRequest(provider: Provider, queryItems: [URLQueryItem]) -> URLRequest? {
+            guard !hasCredentialQueryParameters(provider.accessTokenURL) else { return nil }
             var items = queryItems
             var authorizationValue: String?
             switch (provider.clientType, provider.clientAuthentication) {
@@ -282,6 +279,17 @@ extension OAuth {
             return request
         }
 
+        private static func hasCredentialQueryParameters(_ url: URL) -> Bool {
+            guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return true }
+            return components.queryItems?.contains { item in
+                switch item.name.lowercased() {
+                case "client_secret", "refresh_token", "code", "code_verifier", "device_code":
+                    return true
+                default:
+                    return false
+                }
+            } ?? false
+        }
     }
 }
 
