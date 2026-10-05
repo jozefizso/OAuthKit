@@ -7,6 +7,9 @@
 
 @testable import OAuthKit
 import Testing
+#if canImport(Security)
+import Security
+#endif
 
 @Suite("Keychain Tests", .tags(.keychain))
 final class KeychainTests {
@@ -66,5 +69,50 @@ final class KeychainTests {
         #expect(cleared)
         let surviving: String? = try overlapping.get(key: "token")
         #expect(surviving == "child")
+    }
+    /// Distinguish an empty namespace from a failed Security query and ensure delete failures surface.
+    @Test("Keychain query and deletion failures are actionable")
+    func queryAndDeletionFailuresPropagate() throws {
+        // Arrange: a not-found status is the sole empty-result condition.
+        let missing = Keychain.DefaultStorage(account: "missing", statusOverride: { _ in errSecItemNotFound })
+
+        // Act / Assert: no records return an empty list.
+        #expect(try missing.keys.isEmpty)
+
+        // Arrange: other Security errors must not masquerade as missing data.
+        let queryFailure = Keychain.DefaultStorage(account: "failed", statusOverride: { _ in errSecParam })
+        #expect(throws: (any Error).self) {
+            _ = try queryFailure.keys
+        }
+
+        let deletionFailure = Keychain.DefaultStorage(account: "failed", statusOverride: { _ in errSecInteractionNotAllowed })
+        // Assert deletion status is propagated instead of reporting success.
+        #expect(throws: (any Error).self) {
+            _ = try deletionFailure.clear()
+        }
+    }
+    /// A failed in-place update must leave the old credential available.
+    @Test("Failed replacement preserves the existing credential")
+    func failedUpdatePreservesPreviousValue() throws {
+        // Arrange
+        let account = "oauthkit.test." + String.secureRandom()
+        var storage = Keychain.DefaultStorage(account: account)
+        let oldValue = Data("previous-token".utf8)
+        try storage.set(oldValue, for: "provider")
+        defer {
+            _ = try? storage.clear()
+        }
+        storage.statusOverride = { operation in
+            operation == .update ? errSecInteractionNotAllowed : nil
+        }
+
+        // Act
+        #expect(throws: (any Error).self) {
+            _ = try storage.set(Data("replacement-token".utf8), for: "provider")
+        }
+
+        // Assert
+        storage.statusOverride = nil
+        #expect(try storage.get(key: "provider") == oldValue)
     }
 }

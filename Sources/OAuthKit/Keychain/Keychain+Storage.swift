@@ -10,6 +10,11 @@ import Foundation
 import Security
 #endif
 
+#if canImport(Security)
+enum KeychainSecurityOperation: Equatable {
+    case copy, add, update, delete
+}
+#endif
 /// The default account to use.
 private let defaultAccount = "oauthkit"
 /// The default token identifier suffix.
@@ -35,9 +40,13 @@ extension Keychain {
     /// The default token storage used by Apple ecosystems.
     struct DefaultStorage: Storage {
         var account: String = defaultAccount
+        var statusOverride: ((KeychainSecurityOperation) -> OSStatus?)?
 
-        init(account: String) {
+        init(account: String) { self.account = account }
+
+        init(account: String, statusOverride: @escaping (KeychainSecurityOperation) -> OSStatus?) {
             self.account = account
+            self.statusOverride = statusOverride
         }
 
         var keys: [String] {
@@ -49,29 +58,33 @@ extension Keychain {
                     kSecMatchLimit as String: kSecMatchLimitAll
                 ]
                 var result: AnyObject?
-                let status = withUnsafeMutablePointer(to: &result) { pointer in
+                let status = statusOverride?(.copy) ?? withUnsafeMutablePointer(to: &result) { pointer in
                     SecItemCopyMatching(query as CFDictionary, UnsafeMutablePointer(pointer))
                 }
                 if status == errSecItemNotFound { return [] }
                 guard status == errSecSuccess else { throw KeychainError.securityStatus(status) }
-                guard let items = result as? [[String: Any]] else { return [] }
+                guard let items = result as? [[String: Any]] else { throw KeychainError.securityStatus(errSecDecode) }
                 return items.compactMap { $0[kSecAttrAccount as String] as? String }.sorted()
             }
         }
 
-        /// Stores data under an exact service and deterministic account key.
+        /// Updates an existing item in place or adds a new one, preserving old data on failure.
         @discardableResult
         func set(_ data: Data, for key: String) throws -> Bool {
             assert(key.isNotEmpty, "❌ The keychain key cannot be empty.")
-            _ = try delete(key: accountKey(key))
-            let item: [String: Any] = [
+            let query: [String: Any] = [
                 kSecClass as String: kSecClassGenericPassword,
                 kSecAttrService as String: account,
-                kSecAttrAccount as String: accountKey(key),
-                kSecValueData as String: data
+                kSecAttrAccount as String: accountKey(key)
             ]
-            let status = SecItemAdd(item as CFDictionary, nil)
-            guard status == errSecSuccess else { throw KeychainError.securityStatus(status) }
+            let attributes: [String: Any] = [kSecValueData as String: data]
+            let updateStatus = statusOverride?(.update) ?? SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
+            if updateStatus == errSecSuccess { return true }
+            guard updateStatus == errSecItemNotFound else { throw KeychainError.securityStatus(updateStatus) }
+            var item = query
+            item[kSecValueData as String] = data
+            let addStatus = statusOverride?(.add) ?? SecItemAdd(item as CFDictionary, nil)
+            guard addStatus == errSecSuccess else { throw KeychainError.securityStatus(addStatus) }
             return true
         }
 
@@ -85,12 +98,13 @@ extension Keychain {
                 kSecReturnData as String: true
             ]
             var result: AnyObject?
-            let status = withUnsafeMutablePointer(to: &result) { pointer in
+            let status = statusOverride?(.copy) ?? withUnsafeMutablePointer(to: &result) { pointer in
                 SecItemCopyMatching(query as CFDictionary, UnsafeMutablePointer(pointer))
             }
             if status == errSecItemNotFound { return nil }
             guard status == errSecSuccess else { throw KeychainError.securityStatus(status) }
-            return result as? Data
+            guard let data = result as? Data else { throw KeychainError.securityStatus(errSecDecode) }
+            return data
         }
 
         /// Deletes all generic-password items in this exact service namespace.
@@ -100,7 +114,7 @@ extension Keychain {
                 kSecClass as String: kSecClassGenericPassword,
                 kSecAttrService as String: account
             ]
-            let status = SecItemDelete(query as CFDictionary)
+            let status = statusOverride?(.delete) ?? SecItemDelete(query as CFDictionary)
             if status == errSecSuccess || status == errSecItemNotFound { return true }
             throw KeychainError.securityStatus(status)
         }
@@ -113,7 +127,7 @@ extension Keychain {
                 kSecAttrService as String: account,
                 kSecAttrAccount as String: key
             ]
-            let status = SecItemDelete(query as CFDictionary)
+            let status = statusOverride?(.delete) ?? SecItemDelete(query as CFDictionary)
             if status == errSecSuccess { return true }
             if status == errSecItemNotFound { return false }
             throw KeychainError.securityStatus(status)

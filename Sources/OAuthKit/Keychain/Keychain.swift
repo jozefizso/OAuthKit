@@ -25,7 +25,11 @@ class Keychain: @unchecked Sendable {
     private let decoder = JSONDecoder()
     private var storage: Storage? = nil
 
-    private init() { }
+    private init() {
+        #if canImport(Security)
+        storage = DefaultStorage(account: Bundle.main.bundleIdentifier ?? "oauthkit")
+        #endif
+    }
 
     /// Initializes the keychain with an overridden accound identifier.
     /// - Parameter account: a key indicating the account owner. Ideally, use the application identifier for this value.
