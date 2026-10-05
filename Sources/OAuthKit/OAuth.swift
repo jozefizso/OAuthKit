@@ -30,6 +30,8 @@ public enum OAError: Error {
     case decoding
     /// Unable to write data to the keychain
     case keychain
+    /// The client classification or authentication policy does not permit the request.
+    case invalidClientConfiguration
 }
 
 /// Provides an `Observable` OAuth 2.0 implementation that emits ``OAuth/state`` changes when
@@ -136,6 +138,9 @@ public extension OAuth {
                 await requestDeviceCode(provider: provider)
             }
         case .clientCredentials:
+            guard provider.clientType == .confidential else {
+                return publish(state: .error(provider, .invalidClientConfiguration))
+            }
             task { [self] in
                 await requestClientCredentials(provider: provider)
             }
@@ -454,7 +459,9 @@ extension OAuth {
     /// - Parameters:
     ///   - provider: the provider the device code is being requested from
     func requestClientCredentials(provider: Provider) async {
-        guard let request = Request.token(provider: provider) else { return }
+        guard let request = Request.token(provider: provider) else {
+            return publish(state: .error(provider, .invalidClientConfiguration))
+        }
         guard let (data, response) = try? await urlSession.data(for: request) else {
             return publish(state: .error(provider, .badResponse))
         }

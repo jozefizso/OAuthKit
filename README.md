@@ -27,7 +27,7 @@ Key features include:
 - [Custom URLSession](https://codefiesta.github.io/OAuthKit/documentation/oauthkit/configuration#URL-Session) configuration for complete control custom protocol specific data
 - [Observable State](https://codefiesta.github.io/OAuthKit/documentation/oauthkit/gettingstarted#Observing-OAuth-State) driven events to allow full control over when and if users are prompted to authenticate with an OAuth provider
 - Supports all Apple Platforms (iOS, macOS, tvOS, visionOS, watchOS)
-- [Support for every OAuth 2.0 Flow](#oauthkit-authorization-flows)
+- [Supported OAuth 2.0 grants](#oauthkit-authorization-flows)
 	- [Authorization Code](#oauth-20-authorization-code-flow)
 	- [PKCE](#oauth-20-pkce-flow)
 	- [Device Code](#oauth-20-device-code-flow)
@@ -181,7 +181,9 @@ let oauth: OAuth = .init(.module)
 ```
 
 ### OAuth initialized with providers
-If you are building your OAuth Providers programatically (recommended for production applications via a CI build pipeline for security purposes), you can pass providers and options as well.
+Provider configuration may be loaded from JSON or constructed programmatically.
+Distributed native apps are public clients; neither CI generation nor compilation
+makes an embedded client secret confidential.
 
 ```swift
 let providers: [OAuth.Provider] = ...
@@ -286,6 +288,13 @@ oauth.authorize(provider: provider, grantType: grantType)
 
 The OAuth 2.0 Client Credentials flow is a mechanism where a client application authenticates itself to an authorization server using its own credentials rather than a user's credentials. This flow is primarily used in server-to-server communication, where a service or application needs to access a protected resource without involving a user.
 
+This grant is disabled for public clients. Use a trusted backend for confidential
+grants, and explicitly configure `clientType: .confidential` only where the
+deployment can keep its secret private. Confidential clients default to
+`clientAuthentication: .clientSecretBasic`; `.clientSecretPost` is an explicit
+alternative for servers requiring body authentication. Public clients default
+to `.public` and `.none`, even if a legacy configuration contains a secret.
+
 ```swift
 let grantType: OAuth.GrantType = .clientCredentials
 oauth.authorize(provider: provider, grantType: grantType)
@@ -299,10 +308,9 @@ You can find a sample application integrated with OAuthKit [here](https://github
 
 ## Security Best Practices
 1. Use the [PKCE](https://github.com/codefiesta/OAuthKit?tab=readme-ov-file#oauth-20-pkce-flow) workflow if possible in your public applications.
-2. Never check in **clientID** or **clientSecret** values into source control. Although the **clientID** is public and the **clientSecret** is sensitive and private it is still widely regarded that *both* of these values should be always be treated as confidential.
-3. Don't include `oauth.json` files in your publicly distributed applications. It is possible for someone to [inspect and reverse engineer](https://www.nowsecure.com/blog/2021/09/08/basics-of-reverse-engineering-ios-mobile-apps/) the contents of your app and look at any files inside your app bundle which means you could potentially expose any confidential values contained in this file.
-4. Build OAuth Providers Programmatically via your CI Build Pipeline. Most continuous integration and delivery platforms have the ability to generate source code during build workflows that can get compiled into Swift byte code. It's should be feasible to write a step in the CI pipeline that generates a .swift file that provides access to a list of OAuth.Provider objects that have their confidential values set from the secure CI platform secret keys. This swift code can then compiled into the application as byte code. In practical terms, the security and obfuscation inherent in compiled languages make extracting confidential values difficult (but not impossible).
-5. OAuth 2.0 providers shouldn't provide the ability for publicly distributed applications to initiate [Client Credentials](https://github.com/codefiesta/OAuthKit?tab=readme-ov-file#oauth-20-client-credentials-flow) workflows since it is possible for someone to extract your secrets.
+2. Client IDs are public identifiers. Client secrets must remain on a trusted backend, not in native binaries, bundles, generated Swift code, or source control.
+3. Public/native clients must use public registration and cannot use static-secret authentication or the Client Credentials grant.
+4. Configure confidential clients explicitly and choose exactly one token-endpoint authentication strategy. Basic authentication form-encodes the client ID and secret before Base64 encoding; opt into body authentication only when required by the server.
 
 
 ## OAuth 2.0 Providers

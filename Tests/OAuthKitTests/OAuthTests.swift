@@ -425,6 +425,7 @@ final class OAuthTests {
     /// and assert secret presence never silently promotes a distributed client or enables Client Credentials.
     @Test("Client Classification Is Explicit")
     func whenClassifyingClientsExplicitly() async throws {
+        // Arrange
         let provider = OAuth.Provider(
             id: "unclassified",
             authorizationURL: URL(string: "https://example.com/authorize")!,
@@ -432,12 +433,37 @@ final class OAuthTests {
             clientID: "native-client",
             clientSecret: "must-not-be-used"
         )
-        #expect(provider.clientType == .public)
-        #expect(provider.clientAuthentication == .none)
-        let tokenRequest = OAuth.Request.token(provider: provider, code: "code")
-        #expect(tokenRequest?.value(forHTTPHeaderField: "Authorization") == nil)
-        #expect(String(data: tokenRequest!.httpBody!, encoding: .utf8)!.contains("client_secret") == false)
-        #expect(OAuth.Request.token(provider: provider) == nil)
+        // Act
+        let tokenRequest = try #require(OAuth.Request.token(provider: provider, code: "code"))
+        let clientCredentialsRequest = OAuth.Request.token(provider: provider)
+
+        // Assert
+        #expect(tokenRequest.value(forHTTPHeaderField: "Authorization") == nil)
+        let body = try #require(tokenRequest.httpBody.flatMap { String(data: $0, encoding: .utf8) })
+        #expect(!body.contains("client_secret"))
+        #expect(clientCredentialsRequest == nil)
+    }
+
+    /// A distributed native application must receive an actionable error when
+    /// it attempts a grant reserved for clients that can keep secrets confidential.
+    @Test("Public clients cannot start the Client Credentials grant")
+    func publicClientCredentialsFailsClosed() throws {
+        // Arrange
+        let publicProvider = OAuth.Provider(
+            id: "native-public",
+            authorizationURL: URL(string: "https://example.com/authorize")!,
+            accessTokenURL: URL(string: "https://example.com/token")!,
+            clientID: "native-client"
+        )
+        let client = OAuth(providers: [publicProvider], options: [.applicationTag: "oauthkit.test.\(UUID().uuidString)"])
+
+        // Act
+        client.authorize(provider: publicProvider, grantType: .clientCredentials)
+
+        // Assert
+        #expect(client.state == .error(publicProvider, .invalidClientConfiguration))
+        let stored: OAuth.Authorization? = try client.keychain.get(key: publicProvider.id)
+        #expect(stored == nil)
     }
 
     /// Streams the oauth status until we receive an authorization.
