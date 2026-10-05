@@ -45,8 +45,7 @@ actor OAuthTestRequestHandler {
 
         guard statusCode == statusCodeSuccess, let url = request.url else { return .init() }
 
-        // Returns device code data
-        if url.absoluteString.contains("grant_type=device_code") {
+        if url.path.hasSuffix("/device/code") {
             let deviceCode: OAuth.DeviceCode = .init(deviceCode: .secureRandom(), userCode: "0A17-B332", verificationUri: "https://github.com/codefiesta/OAuthKit", expiresIn: 2, interval: 1)
             return try! encoder.encode(deviceCode)
         }

@@ -55,17 +55,11 @@ extension OAuth {
             return URLRequest(url: url)
         }
 
-        /// Builds an `/authorization` request for refreshing the given token.
-        /// - Parameters:
-        ///   - provider: the oauth provider
-        ///   - token: the auth token to refresh
-        /// - Returns: an `/authorization` url request
         static func refresh(provider: Provider, token: Token) -> URLRequest? {
-            guard var urlComponents = URLComponents(string: provider.authorizationURL.absoluteString) else { return nil }
-            guard let queryItems = buildQueryItems(provider: provider, token: token) else { return nil }
+            guard var urlComponents = URLComponents(string: provider.authorizationURL.absoluteString),
+                  let queryItems = buildQueryItems(provider: provider, token: token) else { return nil }
             urlComponents.queryItems = queryItems
             guard let url = urlComponents.url else { return nil }
-
             var request = URLRequest(url: url)
             request.httpMethod = httpPost
             request.setValue(jsonMimeType, forHTTPHeaderField: httpAcceptHeaderField)
@@ -73,38 +67,15 @@ extension OAuth {
         }
 
         /// Builds a `/token` request for exchanging the given code for a token.
-        /// This method will either encode the query items into the http body (using application/x-www-form-urlencoded)
-        /// or simply send the query item parameters with the request based on how the provider is implemented.
-        /// If you are seeing errors when fetching access tokens from a provider, it may be necessary to
-        /// set the `encodeHttpBody` parameter to false as server implementations vary across providers.
-        /// - Parameters:
-        ///   - provider: the oauth provider
-        ///   - code: the code to exchange for a token
-        ///   - pkce: the pkce data
-        /// - Returns: a `/token` url request
+        /// Parameters are always sent in an application/x-www-form-urlencoded request body.
         static func token(provider: Provider, code: String, pkce: PKCE? = nil) -> URLRequest? {
             let queryItems = buildQueryItems(provider: provider, code: code, pkce: pkce)
-            var request = URLRequest(url: provider.accessTokenURL)
-            request.httpBody = formEncoded(queryItems)
-            request.httpMethod = httpPost
-            request.setValue(jsonMimeType, forHTTPHeaderField: httpAcceptHeaderField)
-            request.setValue(formMimeType, forHTTPHeaderField: httpContentTypeHeaderField)
-            return request
+            return tokenRequest(provider: provider, queryItems: queryItems)
         }
 
-        /// Builds a `/token` request that can be used for polling the token endpoint until the user has approved the request.
-        /// - Parameters:
-        ///   - provider: the oauth provider
-        ///   - deviceCode: the device code data
-        /// - Returns: a  `/token` request that can be used for polling
         static func token(provider: Provider, deviceCode: DeviceCode) -> URLRequest? {
             let queryItems = buildQueryItems(provider: provider, deviceCode: deviceCode)
-            var request = URLRequest(url: provider.accessTokenURL)
-            request.httpBody = formEncoded(queryItems)
-            request.httpMethod = httpPost
-            request.setValue(jsonMimeType, forHTTPHeaderField: httpAcceptHeaderField)
-            request.setValue(formMimeType, forHTTPHeaderField: httpContentTypeHeaderField)
-            return request
+            return tokenRequest(provider: provider, queryItems: queryItems)
         }
 
         /// Builds a client credentials `/token` request.
@@ -112,13 +83,10 @@ extension OAuth {
         ///   - provider: the oauth provider
         /// - Returns: the url request
         static func token(provider: Provider) -> URLRequest? {
-            guard let queryItems = buildQueryItems(provider: provider, grantType: .clientCredentials) else { return nil }
-            var request = URLRequest(url: provider.accessTokenURL)
-            request.httpBody = formEncoded(queryItems)
-            request.httpMethod = httpPost
-            request.setValue(jsonMimeType, forHTTPHeaderField: httpAcceptHeaderField)
-            request.setValue(formMimeType, forHTTPHeaderField: httpContentTypeHeaderField)
-            return request
+            guard provider.clientType == .confidential,
+                  provider.clientAuthentication != .none,
+                  let queryItems = buildQueryItems(provider: provider, grantType: .clientCredentials) else { return nil }
+            return tokenRequest(provider: provider, queryItems: queryItems)
         }
 
         /// Builds a `/device` code request.
@@ -248,7 +216,6 @@ extension OAuth {
                 guard let value = item.value else { continue }
                 capacity += (item.name.utf8.count + value.utf8.count) * 3 + 1
             }
-
             var output = Data()
             output.reserveCapacity(capacity)
             var needsSeparator = false
@@ -284,6 +251,37 @@ extension OAuth {
                 }
             }
         }
+
+        private static func tokenRequest(provider: Provider, queryItems: [URLQueryItem]) -> URLRequest? {
+            var items = queryItems
+            var authorizationValue: String?
+            switch (provider.clientType, provider.clientAuthentication) {
+            case (.public, .none):
+                items.removeAll { $0.name == Key.clientSecret.rawValue }
+            case (.public, _), (.confidential, .none):
+                return nil
+            case (.confidential, .clientSecretBasic):
+                guard let secret = provider.clientSecret else { return nil }
+                items.removeAll { $0.name == Key.clientID.rawValue || $0.name == Key.clientSecret.rawValue }
+                let credentials = "\(formEncode(provider.clientID)):\(formEncode(secret))"
+                authorizationValue = "Basic \(Data(credentials.utf8).base64EncodedString())"
+            case (.confidential, .clientSecretPost):
+                guard let secret = provider.clientSecret else { return nil }
+                if !items.contains(where: { $0.name == Key.clientSecret.rawValue }) {
+                    items.append(URLQueryItem(key: .clientSecret, value: secret))
+                }
+            }
+            var request = URLRequest(url: provider.accessTokenURL)
+            request.httpBody = formEncoded(items)
+            request.httpMethod = httpPost
+            request.setValue(jsonMimeType, forHTTPHeaderField: httpAcceptHeaderField)
+            request.setValue(formMimeType, forHTTPHeaderField: httpContentTypeHeaderField)
+            if let authorizationValue {
+                request.setValue(authorizationValue, forHTTPHeaderField: "Authorization")
+            }
+            return request
+        }
+
     }
 }
 

@@ -9,6 +9,19 @@ import Foundation
 
 extension OAuth {
 
+    /// Classifies whether the OAuth client can keep credentials confidential.
+    public enum ClientType: String, Codable, Hashable, Sendable {
+        case `public`
+        case confidential
+    }
+
+    /// Selects exactly one authentication method for token endpoint requests.
+    public enum ClientAuthentication: String, Codable, Hashable, Sendable {
+        case none
+        case clientSecretBasic
+        case clientSecretPost
+    }
+
     /// Provides configuration data for an OAuth 2.0 service provider.
     public struct Provider: Codable, Identifiable, Hashable, Sendable {
 
@@ -24,63 +37,54 @@ extension OAuth {
         public var deviceCodeURL: URL?
         /// The provider redirect uri.
         public var redirectURI: String?
+        /// Whether this is a distributed public client or a confidential backend client.
+        public var clientType: ClientType
+        /// Token endpoint authentication method. Public clients must use `.none`.
+        public var clientAuthentication: ClientAuthentication
         /// The unique client identifier for interacting with this providers oauth server.
         var clientID: String
-        /// The client's secret known only to the client and the providers oauth server. It is essential the client's password.
+        /// The confidential client secret.
         var clientSecret: String?
         /// The provider scopes.
         public var scope: [String]?
-        /// Informs the oauth client to encode the access token query parameters into the
-        /// http body (using application/x-www-form-urlencoded) or simply send the query parameters with the request.
-        /// This is turned on by default, but you may need to disable this based on how the provider is implemented.
-        public var encodeHttpBody: Bool
-        /// The custom user agent to send with browser requests. Providers such as Slack will block unsupported browsers
-        /// from initiating oauth workflows. Setting this value to a supported user agent string can allow for workarounds.
-        /// Be very careful when setting this value as it can have unintended consquences of how servers respond to requests.
+        /// The custom user agent to send with browser requests.
         public var customUserAgent: String?
         /// Enables provider debugging. Off by default.
         public var debug: Bool
 
         /// The coding keys.
         enum CodingKeys: String, CodingKey {
-            case id
-            case icon
-            case authorizationURL
-            case accessTokenURL
-            case deviceCodeURL
-            case clientID
-            case clientSecret
-            case redirectURI
-            case scope
-            case encodeHttpBody
-            case customUserAgent
-            case debug
+            case id, icon, authorizationURL, accessTokenURL, deviceCodeURL
+            case clientID, clientSecret, clientType, clientAuthentication
+            case redirectURI, scope, customUserAgent, debug
         }
 
-        /// Public initializer.
+        /// Creates provider configuration. Client classification is explicit and defaults to a public client.
         /// - Parameters:
         ///   - id: The provider unique id
         ///   - icon: The provider icon
-        ///   - authorizationURL: The provider authorization url.
-        ///   - accessTokenURL: The provider access token url.
-        ///   - deviceCodeURL: The provider device code url.
-        ///   - clientID: The client id
-        ///   - clientSecret: The client secret
-        ///   - redirectURI: The redirect uri
-        ///   - scope: The oauth scope
-        ///   - encodeHttpBody: If the provider should encode the access token parameters into the http body (true by default)
-        ///   - customUserAgent: The custom user agent to send with browser requests.
-        ///   - debug: Boolean to pass debugging into to the standard output (false by default)
+        ///   - authorizationURL: The provider authorization URL
+        ///   - accessTokenURL: The provider access-token URL
+        ///   - deviceCodeURL: The optional device authorization URL
+        ///   - clientID: The client identifier
+        ///   - clientSecret: A secret for confidential clients
+        ///   - clientType: Explicit client classification, public by default
+        ///   - clientAuthentication: Token endpoint method; Basic by default for confidential clients
+        ///   - redirectURI: The redirect URI
+        ///   - scope: The requested scopes
+        ///   - customUserAgent: A custom browser user agent
+        ///   - debug: Whether provider debugging is enabled
         public init(id: String,
                     icon: URL? = nil,
                     authorizationURL: URL,
                     accessTokenURL: URL,
                     deviceCodeURL: URL? = nil,
                     clientID: String,
-                    clientSecret: String?,
+                    clientSecret: String? = nil,
+                    clientType: ClientType = .public,
+                    clientAuthentication: ClientAuthentication? = nil,
                     redirectURI: String? = nil,
                     scope: [String]? = nil,
-                    encodeHttpBody: Bool = true,
                     customUserAgent: String? = nil,
                     debug: Bool = false) {
             self.id = id
@@ -90,16 +94,15 @@ extension OAuth {
             self.deviceCodeURL = deviceCodeURL
             self.clientID = clientID
             self.clientSecret = clientSecret
+            self.clientType = clientType
+            self.clientAuthentication = clientAuthentication ?? (clientType == .confidential ? .clientSecretBasic : .none)
             self.redirectURI = redirectURI
             self.scope = scope
-            self.encodeHttpBody = encodeHttpBody
             self.customUserAgent = customUserAgent
             self.debug = debug
         }
 
-        /// Custom decoder initializer.
-        /// - Parameters:
-        ///   - decoder: the decoder to use
+        /// Decodes provider configuration, defaulting legacy configurations to public clients.
         public init(from decoder: any Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
             id = try container.decode(String.self, forKey: .id)
@@ -109,9 +112,10 @@ extension OAuth {
             deviceCodeURL = try container.decodeIfPresent(URL.self, forKey: .deviceCodeURL)
             clientID = try container.decode(String.self, forKey: .clientID)
             clientSecret = try container.decodeIfPresent(String.self, forKey: .clientSecret)
+            clientType = try container.decodeIfPresent(ClientType.self, forKey: .clientType) ?? .public
+            clientAuthentication = try container.decodeIfPresent(ClientAuthentication.self, forKey: .clientAuthentication) ?? (clientType == .confidential ? .clientSecretBasic : .none)
             redirectURI = try container.decodeIfPresent(String.self, forKey: .redirectURI)
             scope = try container.decodeIfPresent([String].self, forKey: .scope)
-            encodeHttpBody = try container.decodeIfPresent(Bool.self, forKey: .encodeHttpBody) ?? true
             customUserAgent = try container.decodeIfPresent(String.self, forKey: .customUserAgent)
             debug = try container.decodeIfPresent(Bool.self, forKey: .debug) ?? false
         }

@@ -421,6 +421,25 @@ final class OAuthTests {
         #expect(random.count >= 43)
     }
 
+    /// Arrange a provider with a secret but no explicit confidential classification, act by building requests,
+    /// and assert secret presence never silently promotes a distributed client or enables Client Credentials.
+    @Test("Client Classification Is Explicit")
+    func whenClassifyingClientsExplicitly() async throws {
+        let provider = OAuth.Provider(
+            id: "unclassified",
+            authorizationURL: URL(string: "https://example.com/authorize")!,
+            accessTokenURL: URL(string: "https://example.com/token")!,
+            clientID: "native-client",
+            clientSecret: "must-not-be-used"
+        )
+        #expect(provider.clientType == .public)
+        #expect(provider.clientAuthentication == .none)
+        let tokenRequest = OAuth.Request.token(provider: provider, code: "code")
+        #expect(tokenRequest?.value(forHTTPHeaderField: "Authorization") == nil)
+        #expect(String(data: tokenRequest!.httpBody!, encoding: .utf8)!.contains("client_secret") == false)
+        #expect(OAuth.Request.token(provider: provider) == nil)
+    }
+
     /// Streams the oauth status until we receive an authorization.
     /// This should only be used on test methods that expect an authorization to be inserted into the keychain.
     private func waitForAuthorization(_ oauth: OAuth) async -> Bool {

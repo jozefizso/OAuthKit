@@ -6,6 +6,8 @@
         "deviceCodeURL": "https://domain/oauth/device/code",
         "clientID": "CLIENT_ID",
         "clientSecret": "CLIENT_SECRET",
+        "clientType": "confidential",
+        "clientAuthentication": "clientSecretBasic",
         "redirectURI": "https://github.com/codefiesta/",
         "scope": [
             "email",
@@ -20,6 +22,8 @@
         "accessTokenURL": "https://api.box.com/oauth2/token",
         "clientID": "CLIENT_ID",
         "clientSecret": "CLIENT_SECRET",
+        "clientType": "confidential",
+        "clientAuthentication": "clientSecretBasic",
         "redirectURI": "https://github.com/codefiesta/",
         "scope": [
             "root_readwrite"
@@ -32,6 +36,8 @@
         "accessTokenURL": "https://api.dropboxapi.com/oauth2/token",
         "clientID": "CLIENT_ID",
         "clientSecret": "CLIENT_SECRET",
+        "clientType": "confidential",
+        "clientAuthentication": "clientSecretBasic",
         "redirectURI": "https://github.com/codefiesta/",
         "scope": [
             "email",
@@ -49,6 +55,8 @@
         "deviceCodeURL": "https://github.com/login/device/code",
         "clientID": "CLIENT_ID",
         "clientSecret": "CLIENT_SECRET",
+        "clientType": "confidential",
+        "clientAuthentication": "clientSecretBasic",
         "redirectURI": "oauthkit://callback",
         "scope": [
             "user",
@@ -63,6 +71,8 @@
         "deviceCodeURL": "https://oauth2.googleapis.com/device/code",
         "clientID": "CLIENT_ID",
         "clientSecret": "CLIENT_SECRET",
+        "clientType": "confidential",
+        "clientAuthentication": "clientSecretBasic",
         "redirectURI": "https://github.com/codefiesta/",
         "scope": [
             "email",
@@ -76,6 +86,8 @@
         "accessTokenURL": "https://login.microsoftonline.com/consumers/oauth2/v2.0/token",
         "clientID": "CLIENT_ID",
         "clientSecret": "CLIENT_SECRET",
+        "clientType": "confidential",
+        "clientAuthentication": "clientSecretBasic",
         "redirectURI": "https://github.com/codefiesta/",
         "scope": [
             "email",
@@ -89,6 +101,8 @@
         "accessTokenURL": "https://slack.com/api/oauth.v2.access",
         "clientID": "CLIENT_ID",
         "clientSecret": "CLIENT_SECRET",
+        "clientType": "confidential",
+        "clientAuthentication": "clientSecretBasic",
         "redirectURI": "https://github.com/codefiesta/",
         "customUserAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.5 Safari/605.1.15",
         "scope": [
@@ -101,6 +115,8 @@
         "accessTokenURL": "https://api.stripe.com/v1/oauth/token",
         "clientID": "CLIENT_ID",
         "clientSecret": "CLIENT_SECRET",
+        "clientType": "confidential",
+        "clientAuthentication": "clientSecretBasic",
         "redirectURI": "https://dashboard.stripe.com/test/apps-oauth/com.example.app.id",
         "scope": [
             "connected_account_read",
@@ -117,6 +133,8 @@
         "accessTokenURL": "https://www.linkedin.com/oauth/v2/accessToken",
         "clientID": "CLIENT_ID",
         "clientSecret": "CLIENT_SECRET",
+        "clientType": "confidential",
+        "clientAuthentication": "clientSecretBasic",
         "redirectURI": "https://www.linkedin.com/developers/tools/oauth/redirect",
         "encodeHttpBody": false,
         "scope": [
