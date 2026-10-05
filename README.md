@@ -201,7 +201,10 @@ throws if storage deletion fails and publishes `.empty` only after confirmed
 deletion. Handle that error rather than telling the user logout succeeded.
 
 ### OAuth initialized with custom URLSession
-To support custom protocols or URL schemes that your app supports, developers can pass a custom **.urlSession** option that will allow the configuration of custom [URLProtocol](https://developer.apple.com/documentation/foundation/urlprotocol) classes that can handle the loading of protocol-specific URL data.
+A custom `.urlSession` can install `URLProtocol` handlers for application-specific
+transport behavior and testing. OAuth endpoint URLs must still use HTTPS;
+custom protocols do not opt out of that policy. Token and device endpoint
+redirects are refused so credentials cannot be replayed to another destination.
 
 ```swift
 // Custom URLSession
@@ -311,6 +314,8 @@ You can find a sample application integrated with OAuthKit [here](https://github
 2. Client IDs are public identifiers. Client secrets must remain on a trusted backend, not in native binaries, bundles, generated Swift code, or source control.
 3. Public/native clients must use public registration and cannot use static-secret authentication or the Client Credentials grant.
 4. Configure confidential clients explicitly and choose exactly one token-endpoint authentication strategy. Basic authentication form-encodes the client ID and secret before Base64 encoding; opt into body authentication only when required by the server.
+5. Authorization, token, device, and protected-resource URLs must use HTTPS. The bearer helper refuses insecure destinations.
+6. Native redirects may use HTTPS, literal loopback HTTP (`127.0.0.1` or `[::1]`), or a reverse-domain custom scheme such as `com.example.oauthkit:/callback`. Register the exact redirect with the authorization server; HTTP provider endpoints are never a redirect exception.
 
 
 ## OAuth 2.0 Providers
@@ -326,12 +331,10 @@ form-encoded bodies rather than require credential-bearing URLs.
 * [Dropbox](https://developers.dropbox.com/oauth-guide)
 * [Github](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/authorizing-oauth-apps)
 * [Google](https://developers.google.com/identity/protocols/oauth2)
-	* **Important**: When creating a Google OAuth2 application from the [Google API Console](https://console.developers.google.com/) create an OAuth 2.0 Client type of Web Application (not iOS).
 * [LinkedIn](https://developer.linkedin.com/)
 	* LinkedIn currently doesn't support **PKCE**.
 * [Instagram](https://developers.facebook.com/docs/instagram-basic-display-api/guides/getting-access-tokens-and-permissions)
 * [Microsoft](https://learn.microsoft.com/en-us/entra/identity-platform/v2-oauth2-auth-code-flow)
-    * **Important**: When registering an application inside the [Microsoft Azure Portal](https://portal.azure.com/) it's important to choose a **Redirect URI** as **Web** otherwise the `/token` endpoint will return an error when sending the `client_secret` in the body payload.
 * [Slack](https://api.slack.com/authentication/oauth-v2)
     * **Important**: Slack will block unknown browsers from initiating OAuth workflows. See sample [oauth.json](https://github.com/codefiesta/OAuthKit/blob/main/Tests/OAuthKitTests/Resources/oauth.json) for setting the `customUserAgent` as a workaround.
 * [Stripe](https://docs.stripe.com/stripe-apps/api-authentication/oauth)

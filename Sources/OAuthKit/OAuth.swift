@@ -367,7 +367,7 @@ extension OAuth {
             return publish(state: .error(provider, .malformedURL))
         }
 
-        guard let (data, response) = try? await urlSession.data(for: request) else {
+        guard let (data, response) = try? await urlSession.data(for: request, delegate: OAuthRedirectDelegate.shared) else {
             return publish(state: .error(provider, .badResponse))
         }
 
@@ -378,7 +378,7 @@ extension OAuth {
         }
 
         // Decode the token
-        guard let token = try? decoder.decode(Token.self, from: data) else {
+        guard response.isOK, let token = try? decoder.decode(Token.self, from: data) else {
             return publish(state: .error(provider, .decoding))
         }
 
@@ -408,7 +408,7 @@ extension OAuth {
             return
         }
 
-        guard let (data, response) = try? await urlSession.data(for: request) else {
+        guard let (data, response) = try? await urlSession.data(for: request, delegate: OAuthRedirectDelegate.shared) else {
             return publish(state: .error(provider, .badResponse))
         }
 
@@ -435,8 +435,10 @@ extension OAuth {
     /// - Parameters:
     ///   - provider: the provider the device code is being requested from
     func requestDeviceCode(provider: Provider) async {
-        guard let request = Request.device(provider: provider) else { return }
-        guard let (data, response) = try? await urlSession.data(for: request) else {
+        guard let request = Request.device(provider: provider) else {
+            return publish(state: .error(provider, .malformedURL))
+        }
+        guard let (data, response) = try? await urlSession.data(for: request, delegate: OAuthRedirectDelegate.shared) else {
             return publish(state: .error(provider, .badResponse))
         }
 
@@ -447,7 +449,7 @@ extension OAuth {
         }
 
         // Decode the device code
-        guard let deviceCode = try? decoder.decode(DeviceCode.self, from: data) else {
+        guard response.isOK, let deviceCode = try? decoder.decode(DeviceCode.self, from: data) else {
             return publish(state: .error(provider, .decoding))
         }
 
@@ -462,7 +464,7 @@ extension OAuth {
         guard let request = Request.token(provider: provider) else {
             return publish(state: .error(provider, .invalidClientConfiguration))
         }
-        guard let (data, response) = try? await urlSession.data(for: request) else {
+        guard let (data, response) = try? await urlSession.data(for: request, delegate: OAuthRedirectDelegate.shared) else {
             return publish(state: .error(provider, .badResponse))
         }
 
@@ -473,7 +475,7 @@ extension OAuth {
         }
 
         // Decode the token
-        guard let token = try? decoder.decode(Token.self, from: data) else {
+        guard response.isOK, let token = try? decoder.decode(Token.self, from: data) else {
             return publish(state: .error(provider, .decoding))
         }
 
@@ -496,7 +498,7 @@ extension OAuth {
             return publish(state: .error(provider, .malformedURL))
         }
 
-        guard let (data, response) = try? await urlSession.data(for: request) else {
+        guard let (data, response) = try? await urlSession.data(for: request, delegate: OAuthRedirectDelegate.shared) else {
             return publish(state: .error(provider, .badResponse))
         }
 
