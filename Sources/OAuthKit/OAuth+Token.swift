@@ -28,9 +28,10 @@ extension OAuth {
         /// The type of token this is, typically just the string “Bearer”.
         public let type: String
 
-        /// The OpenID Connect issued by the authorization server.
-        /// This token is included if the authorization server supports OpenID connect and the scope included `openid`
-        public let openIDToken: String?
+        /// The opaque `id_token` returned by the authorization server, if present.
+        /// OAuthKit does not validate its signature or claims. Never use this value as
+        /// authenticated identity without independent OpenID Connect validation.
+        public let rawIDToken: String?
 
         /// Common Initializer.
         /// - Parameters:
@@ -39,14 +40,14 @@ extension OAuth {
         ///   - expiresIn: the expiration time in secods
         ///   - scope: the scope returned from the authorization server
         ///   - type: the token type
-        ///   - openIDToken: the OpenID Connect token
-        public init(accessToken: String, refreshToken: String?, expiresIn: Int?, scope: String?, type: String, openIDToken: String? = nil) {
+        ///   - rawIDToken: an unvalidated, opaque ID token; not authenticated identity
+        public init(accessToken: String, refreshToken: String?, expiresIn: Int?, scope: String?, type: String, rawIDToken: String? = nil) {
             self.accessToken = accessToken
             self.refreshToken = refreshToken
             self.expiresIn = expiresIn
             self.scope = scope
             self.type = type
-            self.openIDToken = openIDToken
+            self.rawIDToken = rawIDToken
         }
 
         enum CodingKeys: String, CodingKey {
@@ -55,7 +56,7 @@ extension OAuth {
             case expiresIn = "expires_in"
             case type = "token_type"
             case scope
-            case openIDToken = "id_token"
+            case rawIDToken = "id_token"
         }
     }
 }

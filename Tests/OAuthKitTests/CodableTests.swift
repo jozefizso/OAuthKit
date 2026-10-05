@@ -42,6 +42,35 @@ struct CodableTests {
         #expect(token == decoded)
     }
 
+    /// A resource server can return an ID token that is not a valid JWT. OAuthKit
+    /// captures it as opaque data rather than implying that an identity was verified.
+    @Test("ID tokens remain explicitly unvalidated opaque values")
+    func capturesOpaqueIDToken() throws {
+        // Arrange
+        let response = Data(#"{"access_token":"resource-token","token_type":"Bearer","id_token":"not-a-signed-jwt"}"#.utf8)
+
+        // Act
+        let token = try decoder.decode(OAuth.Token.self, from: response)
+
+        // Assert
+        #expect(token.rawIDToken == "not-a-signed-jwt")
+        #expect(token.accessToken == "resource-token")
+    }
+
+    /// Ordinary OAuth responses do not contain an ID token and must not be
+    /// mistaken for an OpenID Connect authentication result.
+    @Test("OAuth responses without an ID token expose no identity token")
+    func oauthResponseHasNoIDToken() throws {
+        // Arrange
+        let response = Data(#"{"access_token":"resource-token","token_type":"Bearer"}"#.utf8)
+
+        // Act
+        let token = try decoder.decode(OAuth.Token.self, from: response)
+
+        // Assert
+        #expect(token.rawIDToken == nil)
+    }
+
     @Test("Encoding and Decoding Device Codes")
     func whenDecodingDeviceCodes() async throws {
 

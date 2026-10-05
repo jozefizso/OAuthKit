@@ -32,8 +32,15 @@ Key features include:
 	- [PKCE](#oauth-20-pkce-flow)
 	- [Device Code](#oauth-20-device-code-flow)
 	- [Client Credentials](#oauth-20-client-credentials-flow)
-	- [OpenID Connect](https://www.oauth.com/playground/oidc.html)
+	- Raw ID-token capture (`Token.rawIDToken`); not OpenID Connect authentication
 
+
+OAuthKit authorizes access to OAuth resources; it does not authenticate an OpenID
+Connect identity. The optional `rawIDToken` preserves the server's opaque `id_token`
+without validating it. Before using it as identity, your application must independently
+validate the signature, allowed algorithm and trusted key, issuer, audience,
+authorized party (`azp`), expiry, issued-at time, and transaction-bound nonce.
+Do not treat the `.authorized` state as proof of an authenticated OIDC identity.
 ## OAuthKit Installation
 
 OAuthKit can be installed using [Swift Package Manager](https://www.swift.org/documentation/package-manager/).

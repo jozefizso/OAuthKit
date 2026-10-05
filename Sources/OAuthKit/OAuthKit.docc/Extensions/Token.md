@@ -10,6 +10,11 @@
 ## Overview
 A `Token` is the holder of an ``accessToken`` that can be used in an `URLRequest` to provide credentials for authentication, allowing access to protected resources.
 
+``rawIDToken`` is an optional, unvalidated `id_token` from the server. It is
+opaque data, not proof of authenticated identity. OAuthKit does not perform OIDC
+signature, issuer, audience, authorized-party, time, or nonce validation.
+Use an independent OIDC implementation before trusting it for identity.
+
 ```swift
 /// Adds a header field of 'Authorization: Bearer <<access_token>>'
 let value = "\(token.type) \(token.accessToken)"
