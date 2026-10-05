@@ -207,6 +207,86 @@ final class OAuthTests {
         #expect(result == true)
     }
 
+    /// Verifies that a refresh response without `refresh_token` keeps the existing credential.
+    @Test("Refresh preserves an omitted refresh token")
+    func whenRefreshOmitsRefreshToken() async throws {
+        // Arrange
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [OAuthRefreshTokenOmittedURLProtocol.self]
+        let urlSession = URLSession(configuration: configuration)
+        let applicationTag = "oauthkit.test." + .secureRandom()
+        let oauth = OAuth(.module, options: [
+            .applicationTag: applicationTag,
+            .autoRefresh: false,
+            .urlSession: urlSession,
+        ])
+        let original = OAuth.Token(accessToken: "access-old", refreshToken: "refresh-old", expiresIn: 3600, scope: "old-scope", type: "Bearer", openIDToken: "id-old")
+        let authorization = OAuth.Authorization(issuer: provider.id, token: original)
+        try #require(oauth.keychain.set(authorization, for: provider.id))
+
+        // Act
+        await oauth.refreshToken(provider: provider)
+
+        // Assert
+        let expected = OAuth.Token(accessToken: "access-new", refreshToken: "refresh-old", expiresIn: 1800, scope: "new-scope", type: "Bearer", openIDToken: "id-new")
+        #expect(oauth.state == .authorized(provider, .init(issuer: provider.id, token: expected)))
+        let stored: OAuth.Authorization? = try oauth.keychain.get(key: provider.id)
+        #expect(stored?.token == expected)
+    }
+
+    /// Verifies that a supplied refresh token replaces the existing credential.
+    @Test("Refresh accepts a rotated refresh token")
+    func whenRefreshRotatesRefreshToken() async throws {
+        // Arrange
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [OAuthRefreshTokenRotatedURLProtocol.self]
+        let urlSession = URLSession(configuration: configuration)
+        let applicationTag = "oauthkit.test." + .secureRandom()
+        let oauth = OAuth(.module, options: [
+            .applicationTag: applicationTag,
+            .autoRefresh: false,
+            .urlSession: urlSession,
+        ])
+        let original = OAuth.Token(accessToken: "access-old", refreshToken: "refresh-old", expiresIn: 3600, scope: "old-scope", type: "Bearer")
+        let authorization = OAuth.Authorization(issuer: provider.id, token: original)
+        try #require(oauth.keychain.set(authorization, for: provider.id))
+
+        // Act
+        await oauth.refreshToken(provider: provider)
+
+        // Assert
+        let expected = OAuth.Token(accessToken: "access-new", refreshToken: "refresh-new", expiresIn: 1800, scope: "new-scope", type: "Bearer", openIDToken: "id-new")
+        #expect(oauth.state == .authorized(provider, .init(issuer: provider.id, token: expected)))
+        let stored: OAuth.Authorization? = try oauth.keychain.get(key: provider.id)
+        #expect(stored?.token == expected)
+    }
+
+    /// Verifies that invalid_grant is reported distinctly and removes the revoked credential.
+    @Test("Refresh reports invalid_grant and removes the revoked credential")
+    func whenRefreshReturnsInvalidGrant() async throws {
+        // Arrange
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [OAuthInvalidGrantURLProtocol.self]
+        let urlSession = URLSession(configuration: configuration)
+        let applicationTag = "oauthkit.test." + .secureRandom()
+        let oauth = OAuth(.module, options: [
+            .applicationTag: applicationTag,
+            .autoRefresh: false,
+            .urlSession: urlSession,
+        ])
+        let token = OAuth.Token(accessToken: "access-old", refreshToken: "refresh-revoked", expiresIn: 3600, scope: nil, type: "Bearer")
+        let authorization = OAuth.Authorization(issuer: provider.id, token: token)
+        try #require(oauth.keychain.set(authorization, for: provider.id))
+
+        // Act
+        await oauth.refreshToken(provider: provider)
+
+        // Assert
+        #expect(oauth.state == .error(provider, .oauth("invalid_grant")))
+        let stored: OAuth.Authorization? = try oauth.keychain.get(key: provider.id)
+        #expect(stored == nil)
+    }
+
     @Test("When Auto Refreshng Tokens")
     func whenAutoRefreshingTokens() async throws {
         let key = provider.id

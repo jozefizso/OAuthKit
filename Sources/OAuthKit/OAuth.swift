@@ -19,15 +19,20 @@ private let defaultResourceName = "oauth"
 private let defaultExtension = "json"
 /// The reason displayed when the OS authenticates a protected Keychain read.
 private let defaultKeychainAuthenticationReason = "Unlock OAuth credentials"
+private struct OAuthErrorResponse: Decodable {
+    let error: String
+}
 
 /// Provides an enum of oauth errors.
-public enum OAError: Error {
+public enum OAError: Error, Equatable {
     /// An error occurred while building a request url
     case malformedURL
     /// An error occurred while loading data from a request
     case badResponse
     /// Unable to decode a response from a provider into an expected type.
     case decoding
+    /// The authorization server returned an OAuth error code.
+    case oauth(String)
     /// Unable to write data to the keychain
     case keychain
     /// The client classification or authentication policy does not permit the request.
@@ -455,14 +460,36 @@ extension OAuth {
 
         if provider.debug {
             let statusCode = response.statusCode() ?? -1
-            let rawData = String(data: data, encoding: .utf8) ?? .empty
-            debugPrint("Response: [\(statusCode))]", "Data: [\(rawData)]")
+            debugPrint("Response: [\(statusCode)]")
         }
 
-        // Decode the token
-        guard response.isOK, let token = try? decoder.decode(Token.self, from: data) else {
+        guard response.isOK else {
+            if let error = try? decoder.decode(OAuthErrorResponse.self, from: data) {
+                if error.error == "invalid_grant" {
+                    do {
+                        try keychain.delete(key: provider.id)
+                    } catch {
+                        return publish(state: .error(provider, .keychain))
+                    }
+                }
+                return publish(state: .error(provider, .oauth(error.error)))
+            }
             return publish(state: .error(provider, .decoding))
         }
+
+        // Decode the token and retain the current refresh token when the server
+        // does not rotate it.
+        guard let responseToken = try? decoder.decode(Token.self, from: data) else {
+            return publish(state: .error(provider, .decoding))
+        }
+        let token = Token(
+            accessToken: responseToken.accessToken,
+            refreshToken: responseToken.refreshToken ?? auth.token.refreshToken,
+            expiresIn: responseToken.expiresIn,
+            scope: responseToken.scope,
+            type: responseToken.type,
+            openIDToken: responseToken.openIDToken
+        )
 
         // Store the authorization
         let authorization = Authorization(issuer: provider.id, token: token)

@@ -20,13 +20,16 @@ private let statusCodeServerError = 500
 /// Builds and responds to mock test requests.
 actor OAuthTestRequestHandler {
 
-    let encoder: JSONEncoder = .init()
     let statusCode: Int
+    let responseData: Data?
 
-    /// Initializr
-    /// - Parameter statusCode: the status code to return
-    init(statusCode: Int = statusCodeSuccess) {
+    /// Initializer.
+    /// - Parameters:
+    ///   - statusCode: the status code to return
+    ///   - responseData: optional fixed body to return
+    init(statusCode: Int = statusCodeSuccess, responseData: Data? = nil) {
         self.statusCode = statusCode
+        self.responseData = responseData
     }
 
     /// Returns a mocked URL response for the given request and status code
@@ -43,6 +46,7 @@ actor OAuthTestRequestHandler {
     /// - Returns: the data to respond with
     private func data(request: URLRequest) -> Data {
 
+        if let responseData { return responseData }
         guard statusCode == statusCodeSuccess, let url = request.url else { return .init() }
 
         if url.path.hasSuffix("/device/code") {
@@ -123,5 +127,25 @@ class OAuthTestServerErrorURLProtocol: OAuthTestURLProtocol, @unchecked Sendable
 
     override var handler: OAuthTestRequestHandler {
         .init(statusCode: statusCodeServerError)
+    }
+}
+/// Returns a successful refresh response without a replacement refresh token.
+final class OAuthRefreshTokenOmittedURLProtocol: OAuthTestURLProtocol, @unchecked Sendable {
+    override var handler: OAuthTestRequestHandler {
+        .init(responseData: Data(#"{"access_token":"access-new","expires_in":1800,"token_type":"Bearer","scope":"new-scope","id_token":"id-new"}"#.utf8))
+    }
+}
+
+/// Returns a successful refresh response with a rotated refresh token.
+final class OAuthRefreshTokenRotatedURLProtocol: OAuthTestURLProtocol, @unchecked Sendable {
+    override var handler: OAuthTestRequestHandler {
+        .init(responseData: Data(#"{"access_token":"access-new","refresh_token":"refresh-new","expires_in":1800,"token_type":"Bearer","scope":"new-scope","id_token":"id-new"}"#.utf8))
+    }
+}
+
+/// Returns an invalid_grant error payload.
+final class OAuthInvalidGrantURLProtocol: OAuthTestURLProtocol, @unchecked Sendable {
+    override var handler: OAuthTestRequestHandler {
+        .init(statusCode: statusCodeBadRequest, responseData: Data(#"{"error":"invalid_grant","error_description":"Refresh token was revoked"}"#.utf8))
     }
 }
